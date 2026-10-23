@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "outpost-marketing"
+version = "0.1.0"
+description = "Local app-scoped marketing catalogs with verified immutable object snapshots"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+outpost = "outpost.cli:main"
+
+[tool.setuptools]
+packages = ["outpost"]
+
+[tool.setuptools.package-data]
+outpost = ["schema.sql"]
