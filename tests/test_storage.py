@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 class StorageTests(unittest.TestCase):
@@ -93,6 +94,34 @@ class StorageTests(unittest.TestCase):
         first.write_bytes(b'corrupt')
         with self.assertRaisesRegex(ValueError,'checksum'):
             upload(self.lib,'alpha',self.snap['snapshot_id'],packed)
+
+    def test_missing_objects_cannot_escape_through_symlink_parents(self):
+        outside=self.base/'outside';outside.mkdir()
+        (self.store.root/'apps').mkdir(parents=True)
+        (self.store.root/'apps/alpha').symlink_to(outside,target_is_directory=True)
+        key='apps/alpha/nested/new-object'
+        source=self.base/'source';source.write_bytes(b'authorized bytes')
+        destination=self.base/'read-result'
+        with self.subTest('read'):
+            with self.assertRaises(ValueError):
+                self.store.get(key,destination)
+        with self.subTest('write'):
+            with self.assertRaises(ValueError):
+                self.store.put(key,source)
+        self.assertFalse(destination.exists())
+        self.assertEqual([],list(outside.iterdir()))
+
+    def test_interrupted_local_object_write_is_atomic_and_retryable(self):
+        source=self.base/'source';source.write_bytes(b'complete object')
+        def interrupted(src,dst,*args,**kwargs):
+            dst.write(b'partial')
+            raise OSError('interrupted write')
+        with patch('outpost.storage.shutil.copyfileobj',interrupted):
+            with self.assertRaisesRegex(OSError,'interrupted'):
+                self.store.put('apps/alpha/object',source)
+        self.assertFalse((self.store.root/'apps/alpha/object').exists())
+        self.store.put('apps/alpha/object',source)
+        self.assertEqual(source.read_bytes(),(self.store.root/'apps/alpha/object').read_bytes())
 
 
 if __name__=='__main__':

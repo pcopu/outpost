@@ -1,10 +1,14 @@
 """Write-once snapshot transports; download bytes and SHA-256 every object."""
 import json
+from contextlib import contextmanager
+import errno
+import hashlib
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import stat
 import tempfile
 import uuid
 
@@ -17,26 +21,111 @@ class DirectoryStore:
     def __init__(self,root):
         self.root=Path(root).resolve()
 
+    @staticmethod
+    def _directory(name,dir_fd=None):
+        try:
+            return os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=dir_fd)
+        except OSError as e:
+            if e.errno in (errno.ELOOP,errno.ENOTDIR):
+                raise ValueError('Unsafe symlink or non-directory in object store') from e
+            raise
+
+    @contextmanager
+    def _parent(self,key,create=False):
+        parts=relative(key).parts
+        if self.root.is_symlink() or self.root.resolve()!=self.root:
+            raise ValueError('Object store root changed through a symlink')
+        fd=None
+        try:
+            if not self.root.exists():
+                if not create:
+                    yield None
+                    return
+                self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+            fd=self._directory(self.root)
+            for part in parts[:-1]:
+                try:
+                    child=self._directory(part,fd)
+                except FileNotFoundError:
+                    if not create:
+                        yield None
+                        return
+                    try:
+                        os.mkdir(part,mode=0o700,dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                    child=self._directory(part,fd)
+                os.close(fd);fd=child
+            # Directory descriptors keep containment stable if path names are
+            # swapped after validation; no parent symlink is ever followed.
+            yield fd,parts[-1]
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    @staticmethod
+    def _file(name,dir_fd):
+        try:
+            fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            if e.errno==errno.ELOOP:
+                raise ValueError('Symlink object is not allowed') from e
+            raise
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise ValueError('Object must be a regular file')
+        return fd
+
+    @staticmethod
+    def _hash(fd):
+        h=hashlib.sha256()
+        with os.fdopen(fd,'rb') as f:
+            for block in iter(lambda:f.read(1024*1024),b''):
+                h.update(block)
+        return h.hexdigest()
+
     def get(self,key,destination):
-        path=self.root/relative(key)
-        if not path.exists():
-            return False
-        if path.is_symlink() or not path.resolve().is_relative_to(self.root):
-            raise ValueError('Unsafe object path')
-        shutil.copyfile(path,destination)
-        return True
+        with self._parent(key) as parent:
+            if parent is None:
+                return False
+            fd,name=parent
+            source=self._file(name,fd)
+            if source is None:
+                return False
+            with os.fdopen(source,'rb') as src,Path(destination).open('wb') as dst:
+                shutil.copyfileobj(src,dst)
+            return True
 
     def put(self,key,path):
-        target=self.root/relative(key)
-        target.parent.mkdir(parents=True,exist_ok=True)
-        # Exclusive creation prevents competing writers from replacing objects.
-        try:
-            with target.open('xb') as dst,Path(path).open('rb') as src:
-                shutil.copyfileobj(src,dst)
-                dst.flush();os.fsync(dst.fileno())
-        except FileExistsError:
-            if digest(target)!=digest(path):
-                raise ValueError('Existing immutable object checksum mismatch')
+        with self._parent(key,create=True) as (fd,name):
+            temp='.outpost-put-'+uuid.uuid4().hex
+            new=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+            try:
+                with os.fdopen(new,'wb') as dst,Path(path).open('rb') as src:
+                    shutil.copyfileobj(src,dst)
+                    dst.flush();os.fsync(dst.fileno())
+                try:
+                    # Publish a fully written object atomically, without
+                    # replacing an existing object or following a symlink.
+                    os.link(temp,name,src_dir_fd=fd,dst_dir_fd=fd,follow_symlinks=False)
+                except FileExistsError:
+                    existing=self._file(name,fd)
+                    if existing is None:
+                        raise RuntimeError('Object changed concurrently; retry')
+                    previous=self._hash(existing)
+                    current=self._hash(self._file(temp,fd))
+                    if previous!=current:
+                        raise ValueError('Existing immutable object checksum mismatch')
+                try:
+                    os.fsync(fd)
+                except OSError as e:
+                    if e.errno not in (errno.EINVAL,errno.ENOTSUP):
+                        raise
+            finally:
+                # Only this operation's private temporary copy is removed.
+                os.unlink(temp,dir_fd=fd)
 
 
 class RcloneStore:
