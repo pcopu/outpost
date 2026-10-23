@@ -65,6 +65,8 @@ legacy baselines fail visibly; use normal asset/record imports for new work
 or a new app ID for a separate baseline. This is not a bidirectional live sync.
 
 Dry runs report counts and exclusions without changing library/remote state.
+Catalogs with unfamiliar tables require a local scope review rather than
+silently copying extra records into a marketing backup.
 Caches, credential/session filenames, unknown databases, and files containing
 recognized credential patterns are excluded. Review the report before a real
 upload. JSON containing recognized credential values can be imported as a

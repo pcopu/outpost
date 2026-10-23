@@ -83,6 +83,17 @@ class LibraryTests(unittest.TestCase):
             candidate=(label+'="'+'x'*30+'"').encode()
             self.assertTrue(secret_bytes(candidate),label)
 
+    def test_unknown_tables_require_scope_review_before_import(self):
+        source=self.source()
+        with contextlib.closing(sqlite3.connect(source/'ugc/catalog.sqlite3')) as db:
+            db.execute('CREATE TABLE unrelated_records (value TEXT)')
+            db.execute("INSERT INTO unrelated_records VALUES ('synthetic out-of-scope row')")
+            db.commit()
+        self.lib.register('alpha','Alpha')
+        with self.assertRaisesRegex(ValueError,'Unexpected catalog tables'):
+            self.lib.import_legacy('alpha',source)
+        self.assertEqual([],self.lib.rows('alpha','accounts'))
+
     def test_token_metadata_is_redacted_with_original_checksum_provenance(self):
         from outpost.util import digest
         source=self.source()

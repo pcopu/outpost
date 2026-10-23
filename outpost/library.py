@@ -56,7 +56,11 @@ def counts(db):
     return {t:db.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in DOMAIN_TABLES}
 
 
-def screen_catalog(db):
+def screen_catalog(db, legacy=False):
+    allowed=set(DOMAIN_TABLES+('catalog_meta',)) if legacy else set(READ_TABLES)
+    actual={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    if actual-allowed:
+        raise ValueError('Unexpected catalog tables; review marketing scope locally before import/upload')
     for table in DOMAIN_TABLES:
         for row in db.execute(f'SELECT * FROM "{table}"'):
             if secret_data(dict(row)):
@@ -210,7 +214,7 @@ class Library:
             backed = Path(scratch)/'source.sqlite3'
             backup_database(source/dbrel,backed)
             with connect(backed,readonly=True) as db:
-                screen_catalog(db)
+                screen_catalog(db,legacy=True)
                 original_counts = counts(db)
             entries, excluded = inventory(source, skip=(dbrel,dbrel+'-wal',dbrel+'-shm',dbrel+'-journal'))
             overrides={};sanitized=[]
