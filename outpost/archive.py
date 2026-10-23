@@ -119,6 +119,7 @@ def create_snapshot(lib, app, dry_run=False):
         stage=container/('.building-'+uuid.uuid4().hex)
         stage.mkdir()
         backup_database(appdir/'catalog.sqlite3',stage/'catalog.sqlite3')
+        shutil.copystat(appdir/'catalog.sqlite3',stage/'catalog.sqlite3')
         shutil.copy2(appdir/'app.json',stage/'app.json')
         # Catalogs are included only through the SQLite backup API. The preserved
         # legacy source DB was itself made with that API at import time.
@@ -140,7 +141,11 @@ def create_snapshot(lib, app, dry_run=False):
             check_database(db);check_paths(db,stage);screen_catalog(db)
             payload={'format_version':1,'app_id':app,'counts':counts(db),'entries':sorted(entries,key=lambda x:x['path'])}
         report=appdir/'import-report.json'
-        import_report=json.loads(report.read_text()) if report.exists() else {}
+        if report.exists():
+            import_report=json.loads(report.read_text())
+        else:
+            imports=lib.rows(app,'vault_imports')
+            import_report=json.loads(imports[0]['report_json']) if imports else {}
         payload['excluded']=import_report.get('excluded',[])
         payload['sanitized']=import_report.get('sanitized',[])
         ident=hashlib.sha256(canonical(payload)).hexdigest()

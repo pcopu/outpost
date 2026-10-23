@@ -234,6 +234,17 @@ class LibraryTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             restored.restore(exported)
 
+    def test_snapshot_identity_is_stable_after_noop_and_restore(self):
+        from outpost.library import Library
+        self.lib.register('alpha','Alpha')
+        self.lib.import_legacy('alpha',self.source())
+        first=self.lib.snapshot('alpha')['snapshot_id']
+        self.assertEqual(first,self.lib.snapshot('alpha')['snapshot_id'])
+        export=self.base/'identity-export'
+        self.lib.export_snapshot('alpha',first,export)
+        restored=Library(self.base/'identity-restore');restored.restore(export)
+        self.assertEqual(first,restored.snapshot('alpha')['snapshot_id'])
+
     def test_changed_import_and_external_symlinks_fail_without_overwrite(self):
         source=self.source()
         self.lib.register('alpha','Alpha')
