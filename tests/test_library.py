@@ -82,7 +82,7 @@ class LibraryTests(unittest.TestCase):
         source=self.source()
         token='eyJ'+'a'*30+'.'+'b'*30+'.'+'c'*30
         metadata=source/'ugc/raw/metadata.json'
-        metadata.write_text(json.dumps({'caption':'keep this','items':[{'caption':'retain nested metadata','media_url':'https://example.com/media?token='+token}]}))
+        metadata.write_text(json.dumps({'caption':'keep this','cookie':'private-session-value','items':[{'caption':'retain nested metadata','media_url':'https://example.com/media?token='+token}]}))
         original_sha=digest(metadata)
         with contextlib.closing(sqlite3.connect(source/'ugc/catalog.sqlite3')) as db:
             db.execute("UPDATE videos SET raw_metadata_path='ugc/raw/metadata.json'")
@@ -92,6 +92,7 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(1,len(report['sanitized']))
         stored=self.lib.app_dir('alpha')/'files/legacy/ugc/raw/metadata.json'
         self.assertNotIn(token,stored.read_text())
+        self.assertNotIn('private-session-value',stored.read_text())
         self.assertEqual('keep this',json.loads(stored.read_text())['caption'])
         self.assertEqual('retain nested metadata',json.loads(stored.read_text())['items'][0]['caption'])
         self.assertEqual(original_sha,digest(metadata))

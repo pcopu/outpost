@@ -119,11 +119,27 @@ def secret_bytes(data):
     return bool(SECRET.search(data))
 
 
+def secret_field(key,value):
+    fields={'apikey','apitoken','accesstoken','refreshtoken','cookie','cookies',
+            'session','sessionid','sessiontoken','authorization','password',
+            'clientsecret','privatekey','secretaccesskey','token','csrftoken'}
+    return (re.sub('[^a-z]','',str(key).lower()) in fields and
+            isinstance(value,(str,dict,list)) and bool(value) and
+            value!='[REDACTED CREDENTIAL]')
+
+
 def secret_data(value):
     if isinstance(value,str):
-        return secret_bytes(value.encode())
+        if secret_bytes(value.encode()):
+            return True
+        if value.lstrip().startswith(('{','[')):
+            try:
+                return secret_data(json.loads(value))
+            except ValueError:
+                pass
+        return False
     if isinstance(value,dict):
-        return secret_bytes(canonical(value)) or any(secret_data(v) for v in value.values())
+        return secret_bytes(canonical(value)) or any(secret_field(k,v) or secret_data(v) for k,v in value.items())
     if isinstance(value,(list,tuple)):
         return any(secret_data(v) for v in value)
     return False
@@ -143,6 +159,13 @@ def excluded_name(rel):
 
 
 def inspect_file(path):
+    path=Path(path)
+    if path.suffix.lower()=='.json' and path.stat().st_size<=32*1024*1024:
+        try:
+            if secret_data(json.loads(path.read_text())):
+                return 'possible embedded credential (value withheld)'
+        except (ValueError,UnicodeError):
+            pass
     overlap = b''
     with Path(path).open('rb') as f:
         for block in iter(lambda: f.read(1024 * 1024), b''):
@@ -242,7 +265,7 @@ def sanitize_json(value):
     def visit(node):
         nonlocal changes
         if isinstance(node,str):
-            if secret_bytes(node.encode()):
+            if secret_data(node):
                 changes+=1
                 return '[REDACTED CREDENTIAL]'
             return node
@@ -251,7 +274,7 @@ def sanitize_json(value):
         if isinstance(node,dict):
             result={}
             for key,item in node.items():
-                if isinstance(item,str) and secret_bytes(canonical({key:item})):
+                if secret_field(key,item) or (isinstance(item,str) and secret_bytes(canonical({key:item}))):
                     result[key]='[REDACTED CREDENTIAL]';changes+=1
                 else:
                     result[key]=visit(item)
