@@ -116,6 +116,17 @@ SECRET = re.compile(
 
 
 def secret_bytes(data):
+    # Most media blocks contain none of the literal prefixes required by the
+    # credential regex. C-level substring checks avoid scanning every binary
+    # byte with the more expensive expression while preserving its matches.
+    probe=data.lower()
+    prefixes=(b'private key',b'akia',b'asia',b'eyj',b'bearer',b'password',
+              b'api_key',b'api-key',b'apikey',b'api_token',b'api-token',b'apitoken',
+              b'access_token',b'access-token',b'accesstoken',
+              b'client_secret',b'client-secret',b'clientsecret',
+              b'secret_access_key',b'secret-access-key',b'secretaccesskey')
+    if not any(prefix in probe for prefix in prefixes):
+        return False
     return bool(SECRET.search(data))
 
 
