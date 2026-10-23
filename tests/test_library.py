@@ -77,6 +77,12 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual('creator',result['tables']['accounts'][0]['handle'])
         self.assertIn('vault_asset_sources',result['tables'])
 
+    def test_credential_prefilter_keeps_mixed_separator_matches(self):
+        from outpost.util import secret_bytes
+        for label in ('secret_access-key','secret-access_key','secretaccess-key'):
+            candidate=(label+'="'+'x'*30+'"').encode()
+            self.assertTrue(secret_bytes(candidate),label)
+
     def test_token_metadata_is_redacted_with_original_checksum_provenance(self):
         from outpost.util import digest
         source=self.source()

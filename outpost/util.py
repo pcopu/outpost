@@ -124,7 +124,7 @@ def secret_bytes(data):
               b'api_key',b'api-key',b'apikey',b'api_token',b'api-token',b'apitoken',
               b'access_token',b'access-token',b'accesstoken',
               b'client_secret',b'client-secret',b'clientsecret',
-              b'secret_access_key',b'secret-access-key',b'secretaccesskey')
+              b'secret')
     if not any(prefix in probe for prefix in prefixes):
         return False
     return bool(SECRET.search(data))
