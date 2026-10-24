@@ -190,6 +190,18 @@ class StorageTests(unittest.TestCase):
         actual=next(store.root.rglob('000000')).read_bytes()
         self.assertEqual(expected.getvalue(),actual,'streamed gzip must match previously uploaded chunk bytes')
 
+    def test_provider_auth_errors_preserve_codes_without_exposing_values(self):
+        from types import SimpleNamespace
+        from outpost.storage import WranglerStore
+        store=WranglerStore('private-example','0'*32)
+        private=b'private-value-must-stay-local'
+        response=SimpleNamespace(returncode=1,stdout=b'HTTP 401 {"code":10000,"message":"Authentication error","token":"'+private+b'"}',stderr=b'')
+        source=self.base/'small-upload';source.write_bytes(b'fixture')
+        with patch.object(store,'run',return_value=response):
+            with self.assertRaises(RuntimeError) as caught:store.put('apps/alpha/object',source)
+        self.assertIn('10000',str(caught.exception));self.assertIn('401',str(caught.exception))
+        self.assertNotIn(private.decode(),str(caught.exception))
+
 
 if __name__=='__main__':
     unittest.main()

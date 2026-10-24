@@ -18,6 +18,18 @@ from .archive import snapshot_id, snapshot_path, validate_manifest, verify_snaps
 from .util import canonical, digest, relative, slug, write_json
 
 
+def _wrangler_failure(operation,exit_code,text):
+    """Keep actionable provider codes; never echo arbitrary response values."""
+    codes=sorted(set(re.findall(r'(?:\[code:\s*|"code"\s*:\s*)([0-9]{3,6})(?![0-9])',text)))
+    statuses=sorted(set(re.findall(r'(?i)(?:HTTP(?:/[0-9.]+)?\s*|"status"\s*:\s*)([45][0-9]{2})',text)))
+    probe=text.lower()
+    category='authentication/access' if '10000' in codes or any(s in statuses for s in ('401','403')) or 'authentication error' in probe else 'disk capacity' if any(s in probe for s in ('enospc','no space left')) else 'network' if any(s in probe for s in ('fetch failed','etimedout','econnreset','socket')) else 'CLI/account or transport'
+    detail=f'exit {exit_code}, {category}'
+    if codes:detail+=', provider '+','.join(codes)
+    if statuses:detail+=', HTTP '+','.join(statuses)
+    return f'Wrangler {operation} failed ({detail}); operation stopped, completion not confirmed'
+
+
 class DirectoryStore:
     """Local test/offline object store. Never a live SQLite storage location."""
     def __init__(self,root):
@@ -185,8 +197,7 @@ class WranglerStore:
         if result.returncode and ('10007' in output or 'NoSuchKey' in output or 'The specified key does not exist' in output or 'object does not exist' in output):
             return False
         if result.returncode:
-            category='disk capacity' if any(s in output.lower() for s in ('enospc','no space left')) else 'network' if any(s in output.lower() for s in ('fetch failed','etimedout','econnreset','socket')) else 'CLI/account or transport'
-            raise RuntimeError(f'Wrangler object read failed (exit {result.returncode}, {category}); inspect locally and resume')
+            raise RuntimeError(_wrangler_failure('object read',result.returncode,output))
         return True
 
     def put(self,key,path):
@@ -195,7 +206,7 @@ class WranglerStore:
             raise ValueError('Wrangler upload supports files up to 300 MiB; use an authorized rclone remote for larger files')
         result=self.run(['put',self.bucket+'/'+key,'--file',str(path)])
         if result.returncode:
-            raise RuntimeError('Wrangler object upload failed; no completion marker was written')
+            raise RuntimeError(_wrangler_failure('object upload',result.returncode,(result.stdout+result.stderr).decode(errors='replace')))
 
     def read_payload(self,key):
         """Bounded stdout transfer: no local payload/read-back file."""
@@ -223,7 +234,7 @@ class WranglerStore:
                 if code:
                     error=(bytes(errors)+bytes(data[:4096])).decode(errors='replace')
                     if any(s in error for s in ('10007','NoSuchKey','The specified key does not exist','object does not exist')):raise FileNotFoundError('Remote object absent')
-                    raise RuntimeError(f'Wrangler streaming read failed (exit {code}); no completion marker written')
+                    raise RuntimeError(_wrangler_failure('streaming read',code,error))
             except BaseException:
                 if proc.poll() is None:proc.kill();proc.wait()
                 raise
