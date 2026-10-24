@@ -9,7 +9,7 @@ import tempfile
 import uuid
 
 from .library import PATH_COLUMNS, counts, screen_catalog
-from .util import (backup_database, canonical, check_database, connect, copy_entries,
+from .util import (backup_database, snapshot_database,canonical, check_database, connect, copy_entries,
                    digest, inventory, lock, relative, slug, write_json)
 
 
@@ -61,17 +61,35 @@ def validate_manifest(manifest):
             raise ValueError('Invalid file timestamp')
     if not {'app.json','catalog.sqlite3'}<=seen:
         raise ValueError('Snapshot lacks app identity or catalog')
+    holds=set()
+    for item in manifest.get('held',[]):
+        rel=str(relative(item['path']))
+        if not rel.startswith('files/') or rel in seen or rel in holds or item['size']<0 or not item.get('reason'):
+            raise ValueError('Invalid held-file declaration')
+        snapshot_id(item['sha256']);holds.add(rel)
     for rel in seen:
         if any('/'.join(rel.split('/')[:n]) in seen for n in range(1,len(rel.split('/')))):
             raise ValueError('File or symlink is also a parent path')
     return manifest
 
 
-def check_paths(db, root):
+def check_paths(db, root, held=None):
+    if held is None:
+        marker=root/'snapshot-holds.json'
+        if marker.is_symlink():raise ValueError('Unsafe snapshot holds marker')
+        held=json.loads(marker.read_text()) if marker.exists() else []
+    held={item['path']:item for item in (held or [])}
     for table,columns in dict(PATH_COLUMNS,vault_assets=('stored_path',)).items():
         for col in columns:
             for (value,) in db.execute(f'SELECT "{col}" FROM "{table}" WHERE "{col}" IS NOT NULL AND "{col}" != \'\''):
                 p=root/relative(value)
+                if value in held and not p.exists():
+                    if not value.startswith('files/'):raise ValueError('Only marketing files can be held')
+                    snapshot_id(held[value]['sha256'])
+                    if table=='vault_assets':
+                        sha=db.execute('SELECT sha256 FROM vault_assets WHERE stored_path=?',(value,)).fetchone()[0]
+                        if sha!=held[value]['sha256']:raise ValueError('Held asset hash differs from catalog')
+                    continue
                 if not p.resolve().is_relative_to(root.resolve()) or not p.is_file():
                     raise ValueError(f'Catalog references missing or unsafe file in {table}.{col}')
 
@@ -99,18 +117,28 @@ def verify_snapshot(source):
         raise ValueError('Snapshot app identity mismatch')
     with connect(source/'catalog.sqlite3',readonly=True) as db:
         check_database(db)
-        check_paths(db,source)
+        check_paths(db,source,manifest.get('held',[]))
         if counts(db)!=manifest['counts']:
             raise ValueError('Restored catalog counts mismatch')
     return manifest
 
 
-def create_snapshot(lib, app, dry_run=False):
+def create_snapshot(lib, app, dry_run=False, held_files=None):
     appdir=lib.app_dir(app)
+    marker=appdir/'snapshot-holds.json'
+    if marker.is_symlink():raise ValueError('Unsafe snapshot holds marker')
+    held=json.loads(marker.read_text()) if marker.exists() else []
+    for name in held_files or []:
+        rel=str(relative(name));p=appdir/rel
+        if not rel.startswith('files/') or p.is_symlink() or not p.resolve().is_relative_to(appdir) or not p.is_file():raise ValueError('Unsafe or missing held marketing file')
+        item={'path':rel,'sha256':digest(p),'size':p.stat().st_size,'reason':'Explicit operator privacy hold; retained locally, absent from backup'}
+        if rel in {h['path'] for h in held}:raise ValueError('Duplicate held file')
+        held.append(item)
+    held=sorted(held,key=lambda x:x['path'])
     if dry_run:
         with connect(appdir/'catalog.sqlite3',readonly=True) as db:
-            check_database(db);check_paths(db,appdir);screen_catalog(db)
-            return {'dry_run':True,'app_id':app,'counts':counts(db)}
+            check_database(db);check_paths(db,appdir,held);screen_catalog(db)
+            return {'dry_run':True,'app_id':app,'counts':counts(db),'held':held}
     with lib.writer(app):
         container=appdir/'snapshots'
         container.mkdir(exist_ok=True)
@@ -118,13 +146,16 @@ def create_snapshot(lib, app, dry_run=False):
             raise ValueError('Symlink snapshot directory')
         stage=container/('.building-'+uuid.uuid4().hex)
         stage.mkdir()
-        backup_database(appdir/'catalog.sqlite3',stage/'catalog.sqlite3')
+        snapshot_database(appdir/'catalog.sqlite3',stage/'catalog.sqlite3')
         shutil.copystat(appdir/'catalog.sqlite3',stage/'catalog.sqlite3')
         shutil.copy2(appdir/'app.json',stage/'app.json')
         # Catalogs are included only through the SQLite backup API. The preserved
         # legacy source DB was itself made with that API at import time.
         original='legacy/ugc/catalog.sqlite3'
-        entries,excluded=inventory(appdir/'files',skip=(original,))
+        for item in held:
+            p=appdir/relative(item['path'])
+            if p.exists() and (p.is_symlink() or digest(p)!=item['sha256']):raise ValueError('Held local file changed; review required')
+        entries,excluded=inventory(appdir/'files',skip=(original,)+tuple(h['path'][6:] for h in held),business=True)
         if excluded:
             raise ValueError('Unsafe files found in app storage; inspect locally before snapshot')
         copy_entries(appdir/'files',stage/'files',entries)
@@ -138,8 +169,9 @@ def create_snapshot(lib, app, dry_run=False):
         entries=[dict(e,path='files/'+e['path']) for e in entries]
         entries += [file_entry(stage/'app.json','app.json'),file_entry(stage/'catalog.sqlite3','catalog.sqlite3')]
         with connect(stage/'catalog.sqlite3',readonly=True) as db:
-            check_database(db);check_paths(db,stage);screen_catalog(db)
+            check_database(db);check_paths(db,stage,held);screen_catalog(db)
             payload={'format_version':1,'app_id':app,'counts':counts(db),'entries':sorted(entries,key=lambda x:x['path'])}
+            if held:payload['held']=held
         report=appdir/'import-report.json'
         if report.exists():
             import_report=json.loads(report.read_text())
@@ -163,7 +195,7 @@ def create_snapshot(lib, app, dry_run=False):
             if not p.is_symlink():
                 p.chmod(0o500 if p.is_dir() else p.stat().st_mode & ~0o222)
         destination.chmod(0o500)
-        return {'snapshot_id':ident,'path':str(destination),'counts':payload['counts'],'excluded':payload['excluded']}
+        return {'snapshot_id':ident,'path':str(destination),'counts':payload['counts'],'excluded':payload['excluded'],'held':held}
 
 
 def export_snapshot(lib,app,ident,destination,dry_run=False):
@@ -202,7 +234,8 @@ def restore(lib,source,dry_run=False):
         copy_entries(source,stage,manifest['entries'])
         (stage/'files').mkdir(exist_ok=True)
         with connect(stage/'catalog.sqlite3',readonly=True) as db:
-            check_database(db);check_paths(db,stage)
+            check_database(db);check_paths(db,stage,manifest.get('held',[]))
+        if manifest.get('held'):write_json(stage/'snapshot-holds.json',manifest['held'])
         if destination.exists() or destination.is_symlink():
             raise FileExistsError('Another registration created the target app')
         os.rename(stage,destination)

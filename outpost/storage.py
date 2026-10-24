@@ -247,13 +247,17 @@ def upload(lib,app,ident,store,dry_run=False):
     return result
 
 
-def download(store,app,ident,destination,dry_run=False):
+def download(store,app,ident,destination,dry_run=False,reuse_from=None):
     base=prefix(app,ident)
     destination=Path(destination).expanduser().absolute()
     if destination.exists() or destination.is_symlink():
         raise FileExistsError('Download destination must not exist')
     if dry_run:
         return {'dry_run':True,'app_id':app,'snapshot_id':ident,'prefix':base}
+    if reuse_from:
+        reuse_from=Path(reuse_from).expanduser().resolve()
+        if json.loads((reuse_from/'app.json').read_text())['app_id']!=app:raise ValueError('Restore cache belongs to another app')
+    stats={}
     with tempfile.TemporaryDirectory(prefix='outpost-download-') as scratch:
         commit=Path(scratch)/'commit';mp=Path(scratch)/'manifest'
         if not store.get(base+'/COMMITTED.json',commit):
@@ -268,8 +272,9 @@ def download(store,app,ident,destination,dry_run=False):
             raise ValueError('Manifest identity mismatch')
         if marker.get('transport')=='packed-v1':
             from .packed import download_payload
-            download_payload(store,base,manifest,marker,destination,scratch)
+            stats=download_payload(store,base,manifest,marker,destination,scratch,reuse_from)
         else:
+            if reuse_from:raise ValueError('Cache-assisted verification requires a packed snapshot')
             destination.mkdir(parents=True)
             for entry in manifest['entries']:
                 path=destination/relative(entry['path'])
@@ -289,4 +294,4 @@ def download(store,app,ident,destination,dry_run=False):
                 os.utime(path,ns=(entry['mtime_ns'],entry['mtime_ns']),follow_symlinks=False)
         shutil.copyfile(mp,destination/'manifest.json')
         verify_snapshot(destination)
-    return {'verified':True,'app_id':app,'snapshot_id':ident,'destination':str(destination)}
+    return dict({'verified':True,'app_id':app,'snapshot_id':ident,'destination':str(destination)},**stats)

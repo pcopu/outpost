@@ -8,6 +8,30 @@ import unittest
 
 
 class CliTests(unittest.TestCase):
+    def test_source_launcher_works_outside_checkout(self):
+        launcher=Path(__file__).resolve().parents[1]/'bin/outpost'
+        with tempfile.TemporaryDirectory() as temp:
+            result=subprocess.run([sys.executable,str(launcher),'--root',str(Path(temp)/'data'),'app','list'],cwd=temp,capture_output=True,text=True)
+            self.assertEqual(0,result.returncode,result.stderr)
+            self.assertEqual([],json.loads(result.stdout))
+
+    def test_storage_reference_is_idempotent_and_used_by_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'data';objects=Path(temp)/'objects'
+            def run(*args):
+                result=subprocess.run([sys.executable,'-m','outpost','--root',str(root),*args],capture_output=True,text=True)
+                self.assertEqual(0,result.returncode,result.stderr)
+                return json.loads(result.stdout)
+            run('storage','configure','--local-store',str(objects),'--dry-run')
+            self.assertFalse(root.exists())
+            cfg=run('storage','configure','--local-store',str(objects))
+            self.assertEqual(cfg,run('storage','configure','--local-store',str(objects)))
+            self.assertEqual(cfg,run('storage','show'))
+            run('app','add','demo','--name','Demo')
+            snap=run('snapshot','create','demo')['snapshot_id']
+            self.assertTrue(run('snapshot','upload','demo',snap)['verified'])
+            self.assertTrue(run('snapshot','download','demo',snap,'--out',str(Path(temp)/'download'))['verified'])
+
     def test_cli_registration_asset_query_and_json_export(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)/'data'

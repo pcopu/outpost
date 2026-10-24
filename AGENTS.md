@@ -6,8 +6,11 @@ README.md for commands, layout, auth references, and backup/restore details.
 
 ## Maintained code
 
-- `outpost/cli.py`, `__main__.py`: command parsing and JSON output.
+- `bin/outpost`, `outpost/cli.py`, `__main__.py`: command parsing and JSON output.
 - `outpost/library.py`, `schema.sql`: catalog, records, asset and baseline imports.
+- `outpost/model.py`, `bundle.py`: source identities, full records, histories,
+  lineage and transactional, checksum-validated bundle imports.
+- `outpost/configuration.py`: nonsecret default backend references.
 - `outpost/util.py`: local filesystem guards, locking, hashing, secret screening.
 - `outpost/archive.py`: SQLite snapshots, manifests, export and restore.
 - `outpost/storage.py`, `packed.py`: existing CLI auth references, immutable

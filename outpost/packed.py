@@ -1,16 +1,25 @@
 """Bounded-memory, bounded-disk snapshot packing for the existing Wrangler CLI."""
 import json
+import gzip
+import hashlib
 import math
 import os
 from pathlib import Path
 import shutil
 
 from .archive import snapshot_id
-from .util import digest, relative, write_json
+from .util import copy_file,digest, relative, write_json
 
 
 def upload_payload(store,source,manifest,base,scratch,ensure_object):
     size=getattr(store,'chunk_size',128*1024*1024)
+    previous=Path(scratch)/'previous-transport.json'
+    version=2 if getattr(store,'compress_payload',True) else 1
+    if store.get(base+'/transport.json',previous):
+        prior=json.loads(previous.read_text())
+        version=prior.get('format_version')
+        size=prior.get('chunk_size')
+    if version not in (1,2):raise ValueError('Unsupported transport version')
     if not 1<=size<=128*1024*1024:
         raise ValueError('Invalid transport chunk size')
     path=Path(scratch)/'chunk'
@@ -21,8 +30,15 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
             return
         output.close();output=None
         name=f'payload/{len(chunks):06d}'
-        chunks.append({'path':name,'sha256':digest(path),'size':used})
-        ensure_object(store,base+'/'+name,path,scratch)
+        stored=path
+        chunk={'path':name,'sha256':digest(path),'size':used}
+        if version==2:
+            stored=Path(scratch)/'compressed-chunk'
+            with path.open('rb') as src,stored.open('wb') as raw,gzip.GzipFile(filename='',fileobj=raw,mode='wb',mtime=0,compresslevel=1) as dst:
+                shutil.copyfileobj(src,dst)
+            chunk.update(raw_sha256=chunk['sha256'],raw_size=used,encoding='gzip',sha256=digest(stored),size=stored.stat().st_size)
+        chunks.append(chunk)
+        ensure_object(store,base+'/'+name,stored,scratch)
         used=0
     try:
         for entry in manifest['entries']:
@@ -44,20 +60,21 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
     finally:
         if output:
             output.close()
-    descriptor={'format_version':1,'chunk_size':size,'files':files,'chunks':chunks,'total_bytes':position}
+    descriptor={'format_version':version,'chunk_size':size,'files':files,'chunks':chunks,'total_bytes':position}
     out=Path(scratch)/'transport.json'
     write_json(out,descriptor)
     ensure_object(store,base+'/transport.json',out,scratch)
     return out,len(chunks)
 
 
-def download_payload(store,base,manifest,marker,destination,scratch):
+def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=None):
     descriptor_path=Path(scratch)/'transport.json'
     if not store.get(base+'/transport.json',descriptor_path) or digest(descriptor_path)!=marker['transport_sha256']:
         raise ValueError('Transport descriptor checksum mismatch')
     data=json.loads(descriptor_path.read_text())
     expected=[e for e in manifest['entries'] if e['kind']=='file']
-    if data.get('format_version')!=1 or len(data['files'])!=len(expected):
+    version=data.get('format_version')
+    if version not in (1,2) or len(data['files'])!=len(expected):
         raise ValueError('Invalid transport descriptor')
     size=data['chunk_size'];position=0
     if not isinstance(size,int) or not 1<=size<=128*1024*1024:
@@ -69,34 +86,57 @@ def download_payload(store,base,manifest,marker,destination,scratch):
     if position!=data['total_bytes'] or len(data['chunks'])!=math.ceil(position/size):
         raise ValueError('Invalid transport byte counts')
     for i,chunk in enumerate(data['chunks']):
-        if chunk['path']!=f'payload/{i:06d}' or chunk['size']!=min(size,position-i*size):
+        raw_size=min(size,position-i*size)
+        if chunk['path']!=f'payload/{i:06d}':
             raise ValueError('Invalid transport chunk layout')
+        if version==1 and chunk['size']!=raw_size:raise ValueError('Invalid transport chunk size')
+        if version==2:
+            if chunk.get('encoding')!='gzip' or chunk.get('raw_size')!=raw_size or not 0<chunk['size']<=raw_size+1024*1024:raise ValueError('Invalid compressed chunk layout')
+            snapshot_id(chunk['raw_sha256'])
         snapshot_id(chunk['sha256'])
-    cached=-1;chunk_path=Path(scratch)/'download-chunk'
+    cached=-1;chunk_path=Path(scratch)/'download-chunk';decoded=Path(scratch)/'decoded-chunk';local_clones=0
     destination.mkdir(parents=True)
     for spec,entry in zip(data['files'],expected):
         path=destination/relative(spec['path'])
         path.parent.mkdir(parents=True,exist_ok=True)
         remaining=spec['size'];offset=spec['offset']
-        with path.open('xb') as dst:
+        cache=Path(reuse_from)/entry['path'] if reuse_from else None
+        use_cache=bool(cache and not cache.is_symlink() and cache.is_file() and cache.resolve().is_relative_to(Path(reuse_from).resolve()) and digest(cache)==entry['sha256'])
+        if use_cache:copy_file(cache,path);local_clones+=1
+        dst=None if use_cache else path.open('xb');remote_hash=hashlib.sha256()
+        try:
             while remaining:
                 index=offset//size
                 chunk=data['chunks'][index]
                 if cached!=index:
                     if not store.get(base+'/'+chunk['path'],chunk_path) or chunk_path.stat().st_size!=chunk['size'] or digest(chunk_path)!=chunk['sha256']:
                         raise ValueError('Downloaded chunk checksum mismatch; incomplete directory retained')
+                    if version==2:
+                        with gzip.open(chunk_path,'rb') as src,decoded.open('wb') as unpacked:
+                            remaining_raw=chunk['raw_size']
+                            while remaining_raw:
+                                block=src.read(min(remaining_raw,1024*1024))
+                                if not block:raise ValueError('Truncated compressed chunk')
+                                unpacked.write(block);remaining_raw-=len(block)
+                            if src.read(1):raise ValueError('Compressed chunk exceeds declared size')
+                        if digest(decoded)!=chunk['raw_sha256']:raise ValueError('Decoded chunk checksum mismatch')
                     cached=index
                 amount=min(remaining,size-offset%size)
-                with chunk_path.open('rb') as src:
+                with (decoded if version==2 else chunk_path).open('rb') as src:
                     src.seek(offset%size)
                     rest=amount
                     while rest:
                         block=src.read(min(rest,1024*1024))
                         if not block:
                             raise ValueError('Truncated transport chunk')
-                        dst.write(block);rest-=len(block)
+                        remote_hash.update(block)
+                        if dst:dst.write(block)
+                        rest-=len(block)
                 remaining-=amount;offset+=amount
-        if digest(path)!=entry['sha256']:
+        finally:
+            if dst:dst.close()
+        if remote_hash.hexdigest()!=entry['sha256'] or digest(path)!=entry['sha256']:
             raise ValueError('Restored file checksum mismatch')
         path.chmod(entry['mode'])
         os.utime(path,ns=(entry['mtime_ns'],entry['mtime_ns']))
+    return {'remote_bytes_hashed':position,'local_content_clones':local_clones}

@@ -105,6 +105,22 @@ def backup_database(source, destination):
         src.close()
 
 
+def snapshot_database(source,destination):
+    """Quiesce the app-owned DB under a SQLite write reservation, then clone.
+
+    Unlike external-source backup_database, this may checkpoint the app's own
+    catalog. DELETE journaling and BEGIN IMMEDIATE keep the main file stable;
+    APFS clones avoid allocating another large searchable catalog.
+    """
+    with connect(source) as db:
+        db.execute('PRAGMA journal_mode=DELETE')
+        db.execute('BEGIN IMMEDIATE')
+        copy_file(source,destination)
+        db.rollback()
+    with connect(destination,readonly=True) as image:
+        check_database(image)
+
+
 SECRET = re.compile(
     rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|'
     rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|'
@@ -169,11 +185,12 @@ def excluded_name(rel):
     return None
 
 
-def inspect_file(path):
+def inspect_file(path,business=False):
     path=Path(path)
     if path.suffix.lower()=='.json' and path.stat().st_size<=32*1024*1024:
         try:
-            if secret_data(json.loads(path.read_text())):
+            from .model import credentials
+            if (credentials if business else secret_data)(json.loads(path.read_text())):
                 return 'possible embedded credential (value withheld)'
         except (ValueError,UnicodeError):
             pass
@@ -186,7 +203,7 @@ def inspect_file(path):
     return None
 
 
-def inventory(root, skip=()):
+def inventory(root, skip=(), business=False):
     """Never dereference directory symlinks; keep only safe in-tree links."""
     root = Path(root).resolve()
     entries, excluded = [], []
@@ -215,7 +232,7 @@ def inventory(root, skip=()):
                 target = os.path.relpath(resolved, path.parent)
                 entries.append({'path':rel, 'kind':'symlink', 'target':target, 'mode':stat.S_IMODE(st.st_mode), 'mtime_ns':st.st_mtime_ns})
             elif path.is_file():
-                why = inspect_file(path)
+                why = inspect_file(path,business)
                 if why:
                     excluded.append({'path':rel, 'reason':why})
                 else:

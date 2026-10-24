@@ -123,6 +123,35 @@ class StorageTests(unittest.TestCase):
         self.store.put('apps/alpha/object',source)
         self.assertEqual(source.read_bytes(),(self.store.root/'apps/alpha/object').read_bytes())
 
+    def test_cache_assisted_restore_still_hashes_remote_bytes(self):
+        from outpost.storage import upload,download,DirectoryStore
+        class Packed(DirectoryStore):packed=True;chunk_size=4096
+        store=Packed(self.base/'cached-objects')
+        upload(self.lib,'alpha',self.snap['snapshot_id'],store)
+        output=self.base/'cached-restore'
+        download(store,'alpha',self.snap['snapshot_id'],output,reuse_from=Path(self.snap['path']))
+        self.assertTrue((output/'catalog.sqlite3').is_file())
+        chunk=next(p for p in (self.base/'cached-objects').rglob('*') if p.is_file() and p.name=='000000')
+        chunk.write_bytes(b'corrupt')
+        with self.assertRaisesRegex(ValueError,'checksum'):
+            download(store,'alpha',self.snap['snapshot_id'],self.base/'bad-cache-restore',reuse_from=Path(self.snap['path']))
+
+    def test_packed_chunks_compress_and_legacy_layout_remains_readable(self):
+        from outpost.storage import upload,download,DirectoryStore
+        class Packed(DirectoryStore):packed=True;chunk_size=4096
+        store=Packed(self.base/'compressed')
+        upload(self.lib,'alpha',self.snap['snapshot_id'],store)
+        descriptor=json.loads(next((self.base/'compressed').rglob('transport.json')).read_text())
+        self.assertEqual(2,descriptor['format_version'])
+        self.assertEqual('gzip',descriptor['chunks'][0]['encoding'])
+        self.assertLess(descriptor['chunks'][0]['size'],descriptor['chunks'][0]['raw_size'])
+        class Legacy(Packed):compress_payload=False
+        legacy=Legacy(self.base/'legacy')
+        upload(self.lib,'alpha',self.snap['snapshot_id'],legacy)
+        self.assertEqual(1,json.loads(next((self.base/'legacy').rglob('transport.json')).read_text())['format_version'])
+        download(legacy,'alpha',self.snap['snapshot_id'],self.base/'legacy-download')
+        self.assertTrue(upload(self.lib,'alpha',self.snap['snapshot_id'],Packed(self.base/'legacy'))['verified'])
+
 
 if __name__=='__main__':
     unittest.main()

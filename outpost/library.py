@@ -12,6 +12,7 @@ import uuid
 from .util import (backup_database, canonical, check_database, connect, copy_entries,
                    digest, excluded_name, inspect_file, inventory, local_filesystem,
                    lock, relative, sanitize_json, secret_data, slug, write_json)
+from . import model
 
 
 DOMAIN_TABLES = ('accounts','videos','comments','video_metric_snapshots','ad_usage',
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS vault_file_provenance (
 '''
 PATH_COLUMNS = {'videos':('video_path','audio_path','subtitle_path','thumbnail_path','raw_metadata_path'),
                 'local_assets':('canonical_path','audio_path'), 'local_asset_sources':('source_path',)}
-READ_TABLES = DOMAIN_TABLES + ('catalog_meta','vault_assets','vault_asset_sources','vault_path_provenance','vault_imports','vault_file_provenance')
+READ_TABLES = DOMAIN_TABLES + ('catalog_meta','vault_assets','vault_asset_sources','vault_path_provenance','vault_imports','vault_file_provenance')+model.TABLES
 
 
 def initialize(path):
@@ -45,6 +46,7 @@ def initialize(path):
     try:
         c.executescript(Path(__file__).with_name('schema.sql').read_text())
         c.executescript(VAULT_SCHEMA)
+        model.prepare(c)
         c.execute("INSERT OR IGNORE INTO catalog_meta VALUES ('schema_version','2')")
         c.execute("INSERT OR IGNORE INTO catalog_meta VALUES ('outpost_schema_version','1')")
         c.commit()
@@ -53,7 +55,8 @@ def initialize(path):
 
 
 def counts(db):
-    return {t:db.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in DOMAIN_TABLES}
+    tables=model.available(db)
+    return {t:db.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in DOMAIN_TABLES+model.COUNT_TABLES if t in tables}
 
 
 def screen_catalog(db, legacy=False):
@@ -65,6 +68,11 @@ def screen_catalog(db, legacy=False):
         for row in db.execute(f'SELECT * FROM "{table}"'):
             if secret_data(dict(row)):
                 raise ValueError(f'Possible credential in catalog table {table}; review locally before import/upload')
+    for table in model.PROVIDER_TABLES+('source_events','source_metrics','source_entities','source_relationships'):
+        if table not in actual:continue
+        for row in db.execute(f'SELECT * FROM "{table}"'):
+            if model.credentials(dict(row)):
+                raise ValueError(f'Credential value in marketing source table {table}; review locally')
 
 
 class Library:
@@ -127,6 +135,7 @@ class Library:
         if table not in READ_TABLES:
             raise ValueError('Unknown table')
         with connect(self.app_dir(app)/'catalog.sqlite3',readonly=True) as db:
+            if table in model.TABLES and table not in model.available(db):return []
             columns = {r['name'] for r in db.execute(f'PRAGMA table_info("{table}")')}
             filters = filters or {}
             if not filters.keys() <= columns:
@@ -169,7 +178,12 @@ class Library:
         with connect(self.app_dir(app)/'catalog.sqlite3',readonly=True) as db:
             db.execute('BEGIN')
             check_database(db)
-            return {'app_id':app,'tables':{table:[dict(row) for row in db.execute(f'SELECT * FROM "{table}"')] for table in READ_TABLES}}
+            available=model.available(db)
+            return {'app_id':app,'tables':{table:[dict(row) for row in db.execute(f'SELECT * FROM "{table}"')] if table in available else [] for table in READ_TABLES}}
+
+    def import_bundle(self,app,source,dry_run=False,seed_catalog=None,reference_roots=None):
+        from .bundle import import_bundle
+        return import_bundle(self,app,source,dry_run,seed_catalog,reference_roots)
 
     def import_asset(self, app, source, media_kind='other', metadata=None, dry_run=False):
         source = Path(source).expanduser().absolute()
@@ -293,9 +307,9 @@ class Library:
                 staging.rmdir()
             return report
 
-    def snapshot(self, app, dry_run=False):
+    def snapshot(self, app, dry_run=False, held_files=None):
         from .archive import create_snapshot
-        return create_snapshot(self,app,dry_run)
+        return create_snapshot(self,app,dry_run,held_files)
 
     def export_snapshot(self, app, snapshot_id, destination, dry_run=False):
         from .archive import export_snapshot

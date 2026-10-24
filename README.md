@@ -5,8 +5,16 @@ Each app has its own SQLite database, original files, provenance, snapshots,
 and remote object prefix. Python 3.10+ on macOS or Linux; no runtime Python
 dependencies, web UI, background processes, or hosted model calls.
 
-Run from a checkout with `python3 -m outpost`. Installation is optional:
-`python3 -m pip install .` provides the `outpost` command.
+Run from a checkout with `python3 -m outpost`, or install without downloads:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s "$PWD/bin/outpost" ~/.local/bin/outpost
+outpost --help
+```
+
+Use an unused command path and keep the checkout in place. Alternatively,
+`python3 -m pip install .` provides the command in a Python environment.
 Use an explicit local `--root` or `OUTPOST_ROOT`; the source-checkout default
 is `data/` next to this README. Never put this root on an object/network mount.
 
@@ -77,6 +85,29 @@ If the catalog references another excluded/missing file, the import fails
 instead of dropping the relationship. The scanner is a guardrail, not a proof
 that arbitrary input contains no secrets. Limit inputs to marketing records.
 
+## Saved history, organic content, and ad lineage
+
+Reviewed migration bundles preserve original IDs, full unknown payload fields,
+source coordinates and checksums, metric observations, creative/media links,
+and relationships. See [IMPORT_FORMAT.md](IMPORT_FORMAT.md) for the contract.
+They can be applied repeatedly without duplicate observations:
+
+```sh
+outpost import-bundle example ./reviewed-export --dry-run
+outpost import-bundle example ./reviewed-export
+outpost catalog query example source_records --filter kind=organic_post --limit 5
+outpost metrics example --entity-key provider:post:example --metric views
+outpost lineage example provider:post:example
+```
+
+`source_records` exposes full JSON payloads and source headers; `source_entities`
+provides identity, `source_metrics` preserves individual observations, and
+`source_relationships` tracks saved organic/creative/ad lineage. Provider
+exports and original relational schemas can coexist with this normalized
+model. Missing source relationships, timestamps, or comment bodies stay
+missing. Overlapping metric reports are observations, not additive totals.
+The CLI tracks saved information; it does not publish content or launch ads.
+
 ## Backup, upload, restore
 
 ```sh
@@ -87,16 +118,37 @@ python3 -m outpost snapshot verify ./snapshot-export
 python3 -m outpost --root ./restored-data restore ./snapshot-export
 ```
 
-Snapshot creation holds the app writer lock, uses the SQLite backup API,
+Snapshot creation holds the app writer lock and a SQLite write reservation,
+then takes an independent filesystem copy of the closed DELETE-journal catalog.
+APFS uses copy-on-write; other local filesystems copy the bytes. External
+source catalogs are imported with the SQLite backup API. Snapshot creation
 checks database integrity/foreign keys/file references, hashes every file,
 and writes a manifest. Snapshot IDs are the SHA-256 of canonical manifest
 content. Snapshots are read-only and write-once through this CLI.
+An explicit `snapshot create APP --hold-file files/PRIVATE_RESPONSE.json`
+keeps a reviewed sensitive file local and records its path/hash/size as absent
+from this backup. Holds never silently replace content or claim full coverage.
+Restores retain `snapshot-holds.json`; referenced held assets stay visibly
+unavailable rather than being invented. File holds do not bypass catalog
+credential screening. Preserve withheld originals separately.
+
 Restore requires a fresh app directory and verifies all SHA-256 values and
 catalog counts before admitting the result. Mode bits, nanosecond mtimes,
 and safe internal symlinks round-trip. Ownership, ACLs, resource forks, and
 extended attributes are not portable backup guarantees.
 
-For private R2 storage, reference existing credentials through either tool:
+For private R2 storage, reference existing credentials through either tool.
+A default backend stores references only, never tokens:
+
+```sh
+outpost storage configure --wrangler-bucket YOUR_PRIVATE_BUCKET \
+  --account-id YOUR_ACCOUNT_ID --private-confirmed
+outpost storage show
+```
+
+Once configured, upload/download need no backend flags. Explicit command
+options override the saved reference. Credentials remain in the external CLI.
+Without a default, select a backend for each transfer:
 
 ```sh
 # Existing Wrangler login: no token extraction or new credentials.
@@ -117,10 +169,12 @@ Wrangler account IDs prevent accidental account selection. The live SQLite
 database always stays local. Only immutable snapshots are uploaded under
 `apps/<app>/snapshots/<manifest-sha>/`.
 
-Wrangler uploads use deterministic chunks of at most 128 MiB. The transport
+Wrangler uploads use deterministic gzip chunks of at most 128 MiB of raw
+content. Previously committed uncompressed snapshots remain readable and
+reuploads retain their existing format. The transport
 descriptor maps every original file to its byte range, and the original
-manifest retains each file's SHA-256 and metadata. Only one chunk and one
-read-back file are staged at a time. rclone stores snapshot files as separate
+manifest retains each file's SHA-256 and metadata. Raw, compressed, and read-back chunk files are bounded; no full archive is
+staged for transport. rclone stores snapshot files as separate
 objects. Keep one transport format per remote snapshot prefix.
 
 Every object is downloaded and independently SHA-256 checked after upload;
@@ -138,6 +192,12 @@ python3 -m outpost snapshot download example FULL_SNAPSHOT_SHA \
 python3 -m outpost --root ./restored-data restore ./downloaded-snapshot
 ```
 
+For low-disk verification, download can take `--reuse-from LOCAL_SNAPSHOT`.
+Matching local files are independently cloned into the fresh restore while
+every downloaded chunk and every remote file range is still SHA-256 checked.
+A valid cache cannot conceal corrupt remote data. This saves local allocation;
+it does not skip remote read-back.
+
 All mutating commands support `--dry-run`. For an entirely offline object
 round-trip, replace cloud options with `--local-store ./object-store`.
 Do not use the same object directory as a live library root.
@@ -146,12 +206,14 @@ Do not use the same object directory as a live library root.
 
 ```text
 data/
+  storage.json                 # backend references only
   apps/<app>/
     app.json
     catalog.sqlite3
     .writer.lock
     files/assets/<sha256>
     files/legacy/<original-apparatus-path>
+    files/imports/<bundle-id>/*.jsonl.gz
     snapshots/<manifest-sha>/
     import-report.json
     receipts/<manifest-sha>.json
@@ -164,6 +226,11 @@ independently. Do not bypass the CLI with parallel direct SQLite writes.
 Remote devices make separate snapshots and never merge live databases.
 An interrupted local import/restore keeps staging files for inspection;
 there is no automatic deletion or unsafe overwrite of existing work.
+
+R2 is a private backup destination, not the live database or sole media store.
+The live SQLite catalogs, imported media, and immutable local snapshots remain
+on this machine. There is no automatic cloud-only media eviction, on-demand
+fetch, cross-device merge, or automatic deletion.
 
 No acquisition, transcription, ad-platform publishing, web interface,
 background scheduling, or hosted CI is included. Original legacy scripts
