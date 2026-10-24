@@ -2,6 +2,7 @@
 import json
 import re
 import hashlib
+from functools import lru_cache
 
 from .util import secret_bytes
 
@@ -10,6 +11,15 @@ PROVIDER_TABLES=('records','source_files','source_schema','document_index')+NOIS
 TABLES=('source_events','source_records','source_entities','source_metrics','source_relationships','source_asset_links','source_imports','source_import_files')+PROVIDER_TABLES
 COUNT_TABLES=('source_records','source_entities','source_metrics','source_relationships','source_asset_links','source_imports','source_import_files')+NOISE_TABLES
 _json_screen_cache={}
+_critical=frozenset({'apikey','apitoken','accesstoken','refreshtoken','clientsecret','secretaccesskey','privatekey','password','sessiontoken','cookie','cookies','ttchaintoken'})
+_placeholder=re.compile(r'(?i)\s*(?:\[?redacted(?:[ _:\-](?:credential|jwt|cookie|auth|token|secret))?\]?|<[^>]+>|your[_ -].*|\$\{[^}]+\})\s*')
+
+def placeholder(value):
+    return isinstance(value,str) and (bool(_placeholder.fullmatch(value)) or not value.strip())
+
+@lru_cache(maxsize=2048)
+def field_name(key):
+    return re.sub('[^a-z]','',key.lower())
 
 SCHEMA='''
 CREATE TABLE IF NOT EXISTS records(record_key TEXT PRIMARY KEY,source_path TEXT,json_pointer TEXT,provider TEXT,record_kind TEXT,snapshot TEXT,entity_id TEXT,post_id TEXT,campaign_id TEXT,adset_id TEXT,ad_id TEXT,platform TEXT,observed_at TEXT,date_start TEXT,date_stop TEXT,views REAL,likes REAL,comments REAL,shares REAL,spend REAL,impressions REAL,reach REAL,clicks REAL,payload_json TEXT NOT NULL);
@@ -78,9 +88,6 @@ def available(db):
 
 def credentials(value):
     """Reject credential values, while retaining schemas/prose/business IDs."""
-    critical={'apikey','apitoken','accesstoken','refreshtoken','clientsecret','secretaccesskey','privatekey','password','sessiontoken','cookie','cookies','ttchaintoken'}
-    def placeholder(v):
-        return isinstance(v,str) and (bool(re.fullmatch(r'(?i)\s*(?:\[?redacted(?:[ _:\-](?:credential|jwt|cookie|auth|token|secret))?\]?|<[^>]+>|your[_ -].*|\$\{[^}]+\})\s*',v)) or not v.strip())
     if isinstance(value,str):
         if placeholder(value):return False
         if secret_bytes(value.encode()):return True
@@ -100,9 +107,9 @@ def credentials(value):
     if isinstance(value,list):return any(credentials(v) for v in value)
     if isinstance(value,dict):
         for key,v in value.items():
-            name=re.sub('[^a-z]','',str(key).lower())
+            name=field_name(str(key))
             schema=isinstance(v,dict) and bool(set(v)&{'type','properties','$ref','description','anyOf','oneOf'})
-            if name in critical and isinstance(v,(str,dict,list)) and v and not placeholder(v) and not schema:
+            if name in _critical and isinstance(v,(str,dict,list)) and v and not placeholder(v) and not schema:
                 return True
             if name=='authorization' and isinstance(v,str) and re.match(r'(?i)^(?:bearer|basic)\s+\S{16,}$',v) and not placeholder(v):return True
             if credentials(v):return True

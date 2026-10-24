@@ -152,6 +152,21 @@ class StorageTests(unittest.TestCase):
         download(legacy,'alpha',self.snap['snapshot_id'],self.base/'legacy-download')
         self.assertTrue(upload(self.lib,'alpha',self.snap['snapshot_id'],Packed(self.base/'legacy'))['verified'])
 
+    def test_remote_verification_hashes_content_without_restoring_a_tree(self):
+        from outpost.storage import upload,verify_remote,DirectoryStore
+        class Packed(DirectoryStore):packed=True;chunk_size=4096
+        store=Packed(self.base/'remote-verification')
+        upload(self.lib,'alpha',self.snap['snapshot_id'],store)
+        before=set(self.base.iterdir())
+        result=verify_remote(store,'alpha',self.snap['snapshot_id'],Path(self.snap['path'])/'manifest.json')
+        self.assertTrue(result['verified']);self.assertFalse(result['full_local_restore'])
+        self.assertGreater(result['remote_bytes_hashed'],0)
+        self.assertEqual(before,set(self.base.iterdir()))
+        chunk=next(p for p in (self.base/'remote-verification').rglob('000000'))
+        chunk.write_bytes(b'corrupt')
+        with self.assertRaisesRegex(ValueError,'checksum'):
+            verify_remote(store,'alpha',self.snap['snapshot_id'])
+
 
 if __name__=='__main__':
     unittest.main()

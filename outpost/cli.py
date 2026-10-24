@@ -9,7 +9,7 @@ import sys
 from . import __version__
 from .archive import verify_snapshot
 from .library import Library, READ_TABLES
-from .storage import DirectoryStore, RcloneStore, WranglerStore, download, upload
+from .storage import DirectoryStore, RcloneStore, WranglerStore, download, upload,verify_remote
 from .util import write_json
 
 
@@ -40,6 +40,7 @@ def parser():
     check=snap.add_parser('verify');check.add_argument('directory',type=Path)
     exp=snap.add_parser('export');exp.add_argument('app');exp.add_argument('snapshot');exp.add_argument('--out',type=Path,required=True);dry(exp)
     up=snap.add_parser('upload');up.add_argument('app');up.add_argument('snapshot');transport(up);dry(up)
+    remote=snap.add_parser('remote-verify');remote.add_argument('app');remote.add_argument('snapshot');transport(remote)
     down=snap.add_parser('download');down.add_argument('app');down.add_argument('snapshot');down.add_argument('--out',type=Path,required=True);down.add_argument('--reuse-from',type=Path);transport(down);dry(down)
     restore=groups.add_parser('restore');restore.add_argument('directory',type=Path);dry(restore)
     storage=groups.add_parser('storage').add_subparsers(dest='action',required=True)
@@ -133,6 +134,9 @@ def execute(args):
         return lib.export_snapshot(args.app,args.snapshot,args.out,dry_run)
     if args.action=='upload':
         return upload(lib,args.app,args.snapshot,store(args,lib),dry_run)
+    if args.action=='remote-verify':
+        expected=lib.root/'apps'/args.app/'snapshots'/args.snapshot/'manifest.json'
+        return verify_remote(store(args,lib),args.app,args.snapshot,expected if expected.exists() else None)
     return download(store(args,lib),args.app,args.snapshot,args.out,dry_run,args.reuse_from)
 
 

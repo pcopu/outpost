@@ -34,8 +34,11 @@ never read/copy their secret values into source, logs, data, or chat.
 Keep marketing storage private. Verify public URL/domain settings before
 upload. Scope inputs to marketing records; exclude secrets, sessions, caches,
 and unrelated/customer databases. Report exclusions before real upload.
-Do not claim migration complete until cloud read-back and restored catalog
-relationships/counts verify. No background processes or hosted workflows.
+Do not claim migration complete until all selected remote file bytes and the
+exact catalog hash verify against a locally checked snapshot with intact
+relationships/counts. State whether a fresh full restore was performed.
+Use streaming remote verification when full local downloads are not requested;
+never substitute HEAD/ETag or metadata-only checks for content proof. No background processes or hosted workflows.
 
 ## Verification and publication
 

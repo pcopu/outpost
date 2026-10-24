@@ -155,6 +155,7 @@ class RcloneStore:
 class WranglerStore:
     """Reference the installed Wrangler login/Keychain; never read its token."""
     packed=True
+    chunk_size=64*1024*1024
     def __init__(self,bucket,account_id=None):
         if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]',bucket):
             raise ValueError('Invalid private R2 bucket name')
@@ -170,7 +171,10 @@ class WranglerStore:
         # by Wrangler. Disabling metrics also avoids an unrelated network call.
         env['WRANGLER_LOG_PATH']=str(Path(tempfile.gettempdir())/'outpost-wrangler.log')
         env['WRANGLER_SEND_METRICS']='false'
-        return subprocess.run(['wrangler','r2','object']+args+['--remote'],env=env,capture_output=True)
+        try:
+            return subprocess.run(['wrangler','r2','object']+args+['--remote'],env=env,capture_output=True,timeout=180)
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError('Wrangler object operation timed out after 180 seconds; check the existing account/network and resume') from e
 
     def get(self,key,destination):
         relative(key)
@@ -179,7 +183,8 @@ class WranglerStore:
         if result.returncode and ('10007' in output or 'NoSuchKey' in output or 'The specified key does not exist' in output or 'object does not exist' in output):
             return False
         if result.returncode:
-            raise RuntimeError('Wrangler object read failed; inspect the CLI login/account locally')
+            category='disk capacity' if any(s in output.lower() for s in ('enospc','no space left')) else 'network' if any(s in output.lower() for s in ('fetch failed','etimedout','econnreset','socket')) else 'CLI/account or transport'
+            raise RuntimeError(f'Wrangler object read failed (exit {result.returncode}, {category}); inspect locally and resume')
         return True
 
     def put(self,key,path):
@@ -295,3 +300,21 @@ def download(store,app,ident,destination,dry_run=False,reuse_from=None):
         shutil.copyfile(mp,destination/'manifest.json')
         verify_snapshot(destination)
     return dict({'verified':True,'app_id':app,'snapshot_id':ident,'destination':str(destination)},**stats)
+
+
+def verify_remote(store,app,ident,expected_manifest=None):
+    """Hash all remote packed bytes and file ranges without a restore tree."""
+    base=prefix(app,ident)
+    with tempfile.TemporaryDirectory(prefix='outpost-stream-check-') as scratch:
+        commit=Path(scratch)/'commit';mp=Path(scratch)/'manifest'
+        if not store.get(base+'/COMMITTED.json',commit):raise ValueError('Snapshot upload has no verified completion marker')
+        marker=json.loads(commit.read_text())
+        if marker.get('app_id')!=app or marker.get('snapshot_id')!=ident:raise ValueError('Completion marker identity mismatch')
+        if not store.get(base+'/manifest.json',mp) or digest(mp)!=marker['manifest_sha256']:raise ValueError('Manifest read-back checksum mismatch')
+        manifest=validate_manifest(json.loads(mp.read_text()))
+        if manifest['app_id']!=app or manifest['snapshot_id']!=ident:raise ValueError('Manifest identity mismatch')
+        if expected_manifest and digest(expected_manifest)!=digest(mp):raise ValueError('Remote manifest differs from expected local snapshot')
+        if marker.get('transport')!='packed-v1':raise ValueError('Streaming verification requires a packed snapshot')
+        from .packed import download_payload
+        stats=download_payload(store,base,manifest,marker,None,scratch,verify_only=True)
+        return dict(verified=True,app_id=app,snapshot_id=ident,manifest_sha256=digest(mp),catalog_sha256=next(e['sha256'] for e in manifest['entries'] if e['path']=='catalog.sqlite3'),full_local_restore=False,held_files=len(manifest.get('held',[])),**stats)

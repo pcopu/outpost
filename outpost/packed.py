@@ -67,7 +67,7 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
     return out,len(chunks)
 
 
-def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=None):
+def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=None,verify_only=False):
     descriptor_path=Path(scratch)/'transport.json'
     if not store.get(base+'/transport.json',descriptor_path) or digest(descriptor_path)!=marker['transport_sha256']:
         raise ValueError('Transport descriptor checksum mismatch')
@@ -95,15 +95,15 @@ def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=N
             snapshot_id(chunk['raw_sha256'])
         snapshot_id(chunk['sha256'])
     cached=-1;chunk_path=Path(scratch)/'download-chunk';decoded=Path(scratch)/'decoded-chunk';local_clones=0
-    destination.mkdir(parents=True)
+    if not verify_only:destination.mkdir(parents=True)
     for spec,entry in zip(data['files'],expected):
-        path=destination/relative(spec['path'])
-        path.parent.mkdir(parents=True,exist_ok=True)
+        path=None if verify_only else destination/relative(spec['path'])
+        if path:path.parent.mkdir(parents=True,exist_ok=True)
         remaining=spec['size'];offset=spec['offset']
-        cache=Path(reuse_from)/entry['path'] if reuse_from else None
+        cache=Path(reuse_from)/entry['path'] if reuse_from and not verify_only else None
         use_cache=bool(cache and not cache.is_symlink() and cache.is_file() and cache.resolve().is_relative_to(Path(reuse_from).resolve()) and digest(cache)==entry['sha256'])
         if use_cache:copy_file(cache,path);local_clones+=1
-        dst=None if use_cache else path.open('xb');remote_hash=hashlib.sha256()
+        dst=None if use_cache or verify_only else path.open('xb');remote_hash=hashlib.sha256()
         try:
             while remaining:
                 index=offset//size
@@ -135,8 +135,9 @@ def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=N
                 remaining-=amount;offset+=amount
         finally:
             if dst:dst.close()
-        if remote_hash.hexdigest()!=entry['sha256'] or digest(path)!=entry['sha256']:
+        if remote_hash.hexdigest()!=entry['sha256'] or (path and digest(path)!=entry['sha256']):
             raise ValueError('Restored file checksum mismatch')
-        path.chmod(entry['mode'])
-        os.utime(path,ns=(entry['mtime_ns'],entry['mtime_ns']))
-    return {'remote_bytes_hashed':position,'local_content_clones':local_clones}
+        if path:
+            path.chmod(entry['mode'])
+            os.utime(path,ns=(entry['mtime_ns'],entry['mtime_ns']))
+    return {'remote_bytes_hashed':position,'local_content_clones':local_clones,'files_verified':len(expected)}

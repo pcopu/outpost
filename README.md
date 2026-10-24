@@ -169,7 +169,7 @@ Wrangler account IDs prevent accidental account selection. The live SQLite
 database always stays local. Only immutable snapshots are uploaded under
 `apps/<app>/snapshots/<manifest-sha>/`.
 
-Wrangler uploads use deterministic gzip chunks of at most 128 MiB of raw
+Wrangler uploads default to deterministic gzip chunks of 64 MiB of raw
 content. Previously committed uncompressed snapshots remain readable and
 reuploads retain their existing format. The transport
 descriptor maps every original file to its byte range, and the original
@@ -191,6 +191,19 @@ python3 -m outpost snapshot download example FULL_SNAPSHOT_SHA \
   --private-confirmed --out ./downloaded-snapshot
 python3 -m outpost --root ./restored-data restore ./downloaded-snapshot
 ```
+
+To verify every remote byte without creating an extraction or restore tree:
+
+```sh
+outpost snapshot remote-verify example FULL_SNAPSHOT_SHA
+```
+
+This hashes compressed objects, decoded chunks and every file range against
+the bound manifest. It uses bounded temporary buffers, and compares a local
+manifest when available. It reports `full_local_restore: false`: this is
+content verification, not a newly restored catalog query. A matching remote
+catalog hash proves the catalog bytes equal the checked local snapshot.
+Streaming verification currently requires packed snapshots (Wrangler).
 
 For low-disk verification, download can take `--reuse-from LOCAL_SNAPSHOT`.
 Matching local files are independently cloned into the fresh restore while
