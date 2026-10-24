@@ -177,7 +177,7 @@ class WranglerStore:
             raise ValueError('Invalid account identifier')
         self.bucket=bucket;self.account_id=account_id
 
-    def run(self,args):
+    def run(self,args,input_data=None):
         env=os.environ.copy()
         if self.account_id:
             env['CLOUDFLARE_ACCOUNT_ID']=self.account_id
@@ -186,7 +186,7 @@ class WranglerStore:
         env['WRANGLER_LOG_PATH']=str(Path(tempfile.gettempdir())/'outpost-wrangler.log')
         env['WRANGLER_SEND_METRICS']='false'
         try:
-            return subprocess.run(['wrangler','r2','object']+args+['--remote'],env=env,capture_output=True,timeout=180)
+            return subprocess.run(['wrangler','r2','object']+args+['--remote'],env=env,capture_output=True,input=input_data,timeout=180)
         except subprocess.TimeoutExpired as e:
             raise RuntimeError('Wrangler object operation timed out after 180 seconds; check the existing account/network and resume') from e
 
@@ -207,6 +207,12 @@ class WranglerStore:
         result=self.run(['put',self.bucket+'/'+key,'--file',str(path)])
         if result.returncode:
             raise RuntimeError(_wrangler_failure('object upload',result.returncode,(result.stdout+result.stderr).decode(errors='replace')))
+
+    def put_payload(self,key,data):
+        relative(key)
+        if len(data)>129*1024*1024:raise ValueError('Payload exceeds bounded transport size')
+        result=self.run(['put',self.bucket+'/'+key,'--pipe'],input_data=data)
+        if result.returncode:raise RuntimeError(_wrangler_failure('piped upload',result.returncode,(result.stdout+result.stderr).decode(errors='replace')))
 
     def read_payload(self,key):
         """Bounded stdout transfer: no local payload/read-back file."""
@@ -267,6 +273,16 @@ def ensure_object(store,key,path,scratch):
     store.put(key,path)
     if not store.get(key,readback) or digest(readback)!=expected:
         raise ValueError('Uploaded object read-back checksum mismatch')
+    return 'uploaded_and_verified'
+
+
+def ensure_payload(store,key,data):
+    expected=hashlib.sha256(data).hexdigest();actual=store.hash_object(key)
+    if actual is not None:
+        if actual!=expected:raise ValueError('Existing immutable object checksum mismatch; refusing overwrite')
+        return 'already_verified'
+    store.put_payload(key,data)
+    if store.hash_object(key)!=expected:raise ValueError('Uploaded object read-back checksum mismatch')
     return 'uploaded_and_verified'
 
 

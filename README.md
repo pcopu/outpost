@@ -173,12 +173,15 @@ Wrangler uploads default to deterministic gzip chunks of 64 MiB of raw
 content. Previously committed uncompressed snapshots remain readable and
 reuploads retain their existing format. The transport
 descriptor maps every original file to its byte range, and the original
-manifest retains each file's SHA-256 and metadata. Upload stages one compressed chunk, without a separate raw copy. Wrangler
-read-back and live verification consume stdout into bounded memory, avoiding
-local payload download files. No full archive is staged for transport. rclone stores snapshot files as separate
+manifest retains each file's SHA-256 and metadata. New Wrangler uploads
+compress bounded chunks in memory and use stdin/stdout for upload and read-back.
+Payload chunks do not need disk scratch; only small manifest/descriptor metadata
+is temporary. Multiple bounded buffers and the external CLI still use memory;
+the operating system may swap. Legacy formats remain readable.
+No full archive is staged for transport. rclone stores snapshot files as separate
 objects. Keep one transport format per remote snapshot prefix.
 
-Every object is downloaded and independently SHA-256 checked after upload;
+Every object is read back and independently SHA-256 checked after upload;
 multipart ETags are never treated as content hashes. Existing objects must
 match, otherwise the operation stops without overwriting. `COMMITTED.json`
 is written last, after all objects verify. Interrupted uploads can resume
@@ -249,6 +252,32 @@ fetch, cross-device merge, or automatic deletion.
 No acquisition, transcription, ad-platform publishing, web interface,
 background scheduling, or hosted CI is included. Original legacy scripts
 remain available but retain their own operational constraints.
+
+
+## Intentionally offloaded media
+
+Metadata queries (`catalog query`, `metrics`, `lineage`) use local SQLite and
+continue to work after an explicitly approved media offload. A stored path is
+not a promise that its bytes are currently local. This version does not
+retrieve individual media automatically or provide a per-file fetch command.
+
+Retain exact file SHA-256/size, snapshot path, packed offset/chunk mapping,
+and the authoritative remote snapshot when offloading. Local snapshot trees
+with removed payload files are partial caches: `snapshot list` lists their
+identifiers but does not prove local completeness. Local verify/export/upload
+and new complete snapshot creation need missing media restored first.
+Do not hide media eviction by declaring it a credential/privacy exclusion.
+`remote-verify` can still validate the full cloud snapshot without rehydration.
+
+The supported full recovery path is `snapshot download` into a fresh directory
+with sufficient local storage, then `restore` into a fresh library root.
+Selective range extraction requires an explicit recovery operation using the
+verified mapping; it is not an automatic feature. Do not overwrite existing
+files or infer reclaimed disk space from logical sizes of APFS clones.
+
+JSON catalog export materializes tables in memory. Use SQLite snapshot
+exports for large complete catalog recovery, with enough storage for the
+requested downloaded/restored data.
 
 ## Local verification and publication
 

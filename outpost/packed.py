@@ -22,6 +22,7 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
         version=prior.get('format_version')
         size=prior.get('chunk_size')
     if version not in (1,2):raise ValueError('Unsupported transport version')
+    memory_mode=version==2 and hasattr(store,'put_payload')
     if not 1<=size<=128*1024*1024:
         raise ValueError('Invalid transport chunk size')
     path=Path(scratch)/('compressed-chunk' if version==2 else 'chunk')
@@ -31,14 +32,19 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
         if output is None:
             return
         output.close();output=None
+        payload=raw_output.getvalue() if memory_mode else None
         if raw_output:raw_output.close();raw_output=None
         name=f'payload/{len(chunks):06d}'
         stored=path
-        chunk={'path':name,'sha256':digest(path),'size':used}
+        chunk={'path':name,'sha256':hashlib.sha256(payload).hexdigest() if memory_mode else digest(path),'size':len(payload) if memory_mode else used}
         if version==2:
-            chunk.update(raw_sha256=raw_hash.hexdigest(),raw_size=used,encoding='gzip',sha256=digest(stored),size=stored.stat().st_size)
+            chunk.update(raw_sha256=raw_hash.hexdigest(),raw_size=used,encoding='gzip')
+            if not memory_mode:chunk.update(size=stored.stat().st_size)
         chunks.append(chunk)
-        ensure_object(store,base+'/'+name,stored,scratch)
+        if memory_mode:
+            from .storage import ensure_payload
+            ensure_payload(store,base+'/'+name,payload)
+        else:ensure_object(store,base+'/'+name,stored,scratch)
         used=0;raw_hash=hashlib.sha256()
     try:
         for entry in manifest['entries']:
@@ -49,7 +55,7 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
                 remaining=entry['size']
                 while remaining:
                     if output is None:
-                        raw_output=path.open('wb')
+                        raw_output=io.BytesIO() if memory_mode else path.open('wb')
                         output=gzip.GzipFile(filename='',fileobj=raw_output,mode='wb',mtime=0,compresslevel=1) if version==2 else raw_output
                     block=src.read(min(1024*1024,size-used,remaining))
                     if not block:

@@ -37,6 +37,11 @@ and unrelated/customer databases. Report exclusions before real upload.
 Do not claim migration complete until all selected remote file bytes and the
 exact catalog hash verify against a locally checked snapshot with intact
 relationships/counts. State whether a fresh full restore was performed.
+After explicitly approved media offload, retain exact remote recovery mappings
+and identify local snapshot trees as partial caches. Metadata queries may work
+while file access and complete local snapshot operations require retrieval.
+Do not rehydrate media without a request or describe automatic per-file fetch
+as available. Keep privacy holds distinct from missing offloaded payloads.
 Use streaming remote verification when full local downloads are not requested;
 never substitute HEAD/ETag or metadata-only checks for content proof. No background processes or hosted workflows.
 

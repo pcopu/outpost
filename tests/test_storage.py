@@ -176,11 +176,18 @@ class StorageTests(unittest.TestCase):
                 if '/payload/' in key:raise AssertionError('payload was downloaded to disk')
                 return super().get(key,destination)
             def read_payload(self,key):return (self.root/key).read_bytes()
+            def put_payload(self,key,data):
+                source=self.root.parent/'memory-input';source.write_bytes(data)
+                super().put(key,source);source.unlink()
             def hash_object(self,key):
                 try:return hashlib.sha256(self.read_payload(key)).hexdigest()
                 except FileNotFoundError:return None
         store=Memory(self.base/'memory-store')
-        upload(self.lib,'alpha',self.snap['snapshot_id'],store)
+        original=Path.open
+        def no_disk_chunks(path,*args,**kwargs):
+            if path.name in ('chunk','compressed-chunk') and args and 'w' in args[0]:raise AssertionError('payload chunk staged on disk')
+            return original(path,*args,**kwargs)
+        with patch('outpost.packed.Path.open',no_disk_chunks):upload(self.lib,'alpha',self.snap['snapshot_id'],store)
         result=verify_remote(store,'alpha',self.snap['snapshot_id'])
         self.assertTrue(result['verified'])
         manifest=json.loads((Path(self.snap['path'])/'manifest.json').read_text())
