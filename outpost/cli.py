@@ -25,6 +25,11 @@ def parser():
     add=asset.add_parser('import');add.add_argument('app');add.add_argument('file',type=Path)
     add.add_argument('--kind',choices=['video','image','audio','document','other'],default='other')
     add.add_argument('--metadata',type=Path);dry(add)
+    fetch=asset.add_parser('fetch',help='Retrieve one verified file into an explicit external destination')
+    fetch.add_argument('app');fetch.add_argument('source_path',help='App-relative files/... path from the snapshot/catalog')
+    fetch.add_argument('--snapshot',required=True,help='Full authoritative snapshot SHA-256')
+    fetch.add_argument('--out',type=Path,required=True,help='Fresh external output file; parent must exist, no automatic cache')
+    transport(fetch);dry(fetch)
     legacy=groups.add_parser('import-legacy');legacy.add_argument('app');legacy.add_argument('source',type=Path);dry(legacy)
     bundle=groups.add_parser('import-bundle');bundle.add_argument('app');bundle.add_argument('source',type=Path);bundle.add_argument('--seed-catalog',type=Path);bundle.add_argument('--reference-root',type=Path,action='append',default=[]);dry(bundle)
     lineage=groups.add_parser('lineage');lineage.add_argument('app');lineage.add_argument('entity_key');lineage.add_argument('--limit',type=int,default=100)
@@ -91,6 +96,9 @@ def execute(args):
     if args.group=='app':
         return lib.register(args.app,args.name,dry_run) if args.action=='add' else lib.apps()
     if args.group=='asset':
+        if args.action=='fetch':
+            from .fetch import fetch_file
+            return fetch_file(lib,store(args,lib),args.app,args.snapshot,args.source_path,args.out,dry_run)
         metadata=json.loads(args.metadata.read_text()) if args.metadata else {}
         return lib.import_asset(args.app,args.file,args.kind,metadata,dry_run)
     if args.group=='import-legacy':

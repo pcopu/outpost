@@ -209,6 +209,32 @@ class StorageTests(unittest.TestCase):
         self.assertIn('10000',str(caught.exception));self.assertIn('401',str(caught.exception))
         self.assertNotIn(private.decode(),str(caught.exception))
 
+    def test_streaming_reader_drains_stderr_without_staging_body_files(self):
+        import sys
+        from outpost.storage import _command_blocks
+        program="import os;os.write(2,b'e'*100000);os.write(1,b'x'*2000000)"
+        blocks=list(_command_blocks([sys.executable,'-c',program]))
+        self.assertEqual(b'x'*2000000,b''.join(blocks))
+        self.assertLessEqual(max(map(len,blocks)),1024*1024)
+
+    def test_closing_stream_terminates_its_interrupted_child(self):
+        import os,sys
+        from outpost.storage import _command_blocks
+        program="import os,sys,time;print(os.getpid(),flush=True);time.sleep(20)"
+        stream=_command_blocks([sys.executable,'-c',program])
+        try:pid=int(next(stream).strip())
+        finally:stream.close()
+        with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+
+    def test_streaming_auth_failure_does_not_echo_provider_values(self):
+        import sys
+        from outpost.storage import _command_blocks
+        private='private-fixture-'+'x'*30
+        program="import sys;sys.stderr.write("+repr('HTTP 401 {"code":10000,"token":"'+private+'"}')+");sys.exit(1)"
+        with self.assertRaisesRegex(RuntimeError,'10000') as caught:
+            list(_command_blocks([sys.executable,'-c',program]))
+        self.assertNotIn(private,str(caught.exception))
+
 
 if __name__=='__main__':
     unittest.main()

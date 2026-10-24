@@ -236,7 +236,7 @@ data/
     receipts/<manifest-sha>.json
 ```
 
-Each mutating app operation takes an exclusive nonblocking `flock`; SQLite
+Each operation mutating managed app state takes an exclusive nonblocking `flock`; SQLite
 also uses transactions, foreign keys, a busy timeout, and FULL synchronization.
 Two writers on the same app fail clearly. Different apps can operate
 independently. Do not bypass the CLI with parallel direct SQLite writes.
@@ -244,10 +244,12 @@ Remote devices make separate snapshots and never merge live databases.
 An interrupted local import/restore keeps staging files for inspection;
 there is no automatic deletion or unsafe overwrite of existing work.
 
-R2 is a private backup destination, not the live database or sole media store.
-The live SQLite catalogs, imported media, and immutable local snapshots remain
-on this machine. There is no automatic cloud-only media eviction, on-demand
-fetch, cross-device merge, or automatic deletion.
+R2 holds private immutable backups; SQLite remains the local live database.
+Media normally stays local unless explicitly offloaded after remote verification.
+An offloaded file can have its only retained payload in R2, with catalog and
+recovery metadata still local. `asset fetch` retrieves an explicit external copy
+on demand. There is no automatic media eviction/hydration, cross-device merge,
+or automatic deletion.
 
 No acquisition, transcription, ad-platform publishing, web interface,
 background scheduling, or hosted CI is included. Original legacy scripts
@@ -258,8 +260,47 @@ remain available but retain their own operational constraints.
 
 Metadata queries (`catalog query`, `metrics`, `lineage`) use local SQLite and
 continue to work after an explicitly approved media offload. A stored path is
-not a promise that its bytes are currently local. This version does not
-retrieve individual media automatically or provide a per-file fetch command.
+not a promise that its bytes are currently local. Retrieve one file on demand:
+
+```sh
+outpost asset fetch example files/assets/FILE_SHA256 \
+  --snapshot FULL_SNAPSHOT_SHA --out ~/Downloads/creative.mp4 --dry-run
+outpost asset fetch example files/assets/FILE_SHA256 \
+  --snapshot FULL_SNAPSHOT_SHA --out ~/Downloads/creative.mp4
+```
+
+Use the exact app-relative `files/...` path from its catalog or snapshot manifest
+and a full snapshot ID. The snapshot must contain that regular file; symlinks,
+privacy holds, absent files, catalogs and identity files are not accepted.
+The existing configured private backend is used, or specify the usual explicit
+backend flags. A matching local media file or complete local snapshot is not
+required. App identity and the content-addressed remote manifest are checked.
+
+`--out` is mandatory: a fresh file outside the managed library, with an existing
+parent directory containing no symlink components. The command creates a private
+0600 copy, preserves its file timestamp, and refuses to overwrite anything.
+It does not populate a hidden cache, change catalog paths, rehydrate the library,
+restore other files, or modify remote objects. Choose an app-specific external
+output directory when retaining several retrieved assets.
+
+Packed snapshots read only intersecting content chunks. The current gzip layout
+requires reading and decoding each intersecting chunk completely, even for a tiny
+file. No whole archive or raw chunk is staged on disk. CLI stdout and decompression
+use bounded buffers; output disk use grows only to the requested file size.
+Unpacked snapshots read only that file object. Compressed-object, decoded-chunk
+and final-file SHA-256/size checks must all pass before an atomic, no-replacement
+publication. Unrelated snapshot bytes are not reverified by a single-file fetch;
+use `remote-verify` when that is needed.
+
+JSON output reports `remote_payload_bytes`, `remote_metadata_bytes`, their sum
+`remote_bytes_fetched`, `chunks_fetched`, and `materialized_bytes`. These count
+object response bodies, excluding HTTP/TLS overhead and the external tool's auth
+traffic. A dry run reads and verifies metadata only, creates nothing, and reports
+planned payload/file bytes. There is no implicit provider retry or auth grant.
+A failed/interrupted fetch removes its own temporary output and can be retried;
+a hard kill or power loss can leave a private `.outpost-fetch-*` partial file,
+which is never trusted as a cache. Remote CLI reads time out after 180 seconds
+per object; access failures retain safe provider codes without echoing secrets.
 
 Retain exact file SHA-256/size, snapshot path, packed offset/chunk mapping,
 and the authoritative remote snapshot when offloading. Local snapshot trees
@@ -271,9 +312,10 @@ Do not hide media eviction by declaring it a credential/privacy exclusion.
 
 The supported full recovery path is `snapshot download` into a fresh directory
 with sufficient local storage, then `restore` into a fresh library root.
-Selective range extraction requires an explicit recovery operation using the
-verified mapping; it is not an automatic feature. Do not overwrite existing
-files or infer reclaimed disk space from logical sizes of APFS clones.
+Use `asset fetch` for an explicit individual-file copy using the verified
+remote mapping; this does not automatically repair partial local snapshot trees.
+Do not overwrite existing files or infer reclaimed disk space from logical sizes
+of APFS clones.
 
 JSON catalog export materializes tables in memory. Use SQLite snapshot
 exports for large complete catalog recovery, with enough storage for the

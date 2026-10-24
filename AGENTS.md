@@ -13,6 +13,7 @@ README.md for commands, layout, auth references, and backup/restore details.
 - `outpost/configuration.py`: nonsecret default backend references.
 - `outpost/util.py`: local filesystem guards, locking, hashing, secret screening.
 - `outpost/archive.py`: SQLite snapshots, manifests, export and restore.
+- `outpost/fetch.py`: verified individual media retrieval to explicit external files.
 - `outpost/storage.py`, `packed.py`: existing CLI auth references, immutable
   remote uploads, independent SHA-256 read-back, bounded snapshot chunks.
 - `tests/`: local synthetic regression tests and a data-free legacy DDL fixture.
@@ -40,8 +41,11 @@ relationships/counts. State whether a fresh full restore was performed.
 After explicitly approved media offload, retain exact remote recovery mappings
 and identify local snapshot trees as partial caches. Metadata queries may work
 while file access and complete local snapshot operations require retrieval.
-Do not rehydrate media without a request or describe automatic per-file fetch
-as available. Keep privacy holds distinct from missing offloaded payloads.
+Use `asset fetch` only for an explicit external copy: no implicit hydration/cache,
+managed-library writes, overwrite, credential grant or remote mutation. Validate
+app/snapshot identity, all selected chunks and the requested file before atomic
+publication; report response-body bytes separately from materialized bytes.
+Keep privacy holds distinct from missing offloaded payloads.
 Use streaming remote verification when full local downloads are not requested;
 never substitute HEAD/ETag or metadata-only checks for content proof. No background processes or hosted workflows.
 

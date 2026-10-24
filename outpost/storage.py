@@ -30,6 +30,36 @@ def _wrangler_failure(operation,exit_code,text):
     return f'Wrangler {operation} failed ({detail}); operation stopped, completion not confirmed'
 
 
+def _command_blocks(command,env=None,provider='Wrangler'):
+    """Read CLI stdout incrementally; drain stderr and bound time/error buffers."""
+    errors=bytearray();probe=bytearray();deadline=time.monotonic()+180
+    with subprocess.Popen(command,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE) as proc:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout,selectors.EVENT_READ,'data')
+                selector.register(proc.stderr,selectors.EVENT_READ,'error')
+                while selector.get_map():
+                    left=deadline-time.monotonic()
+                    if left<=0:raise RuntimeError(provider+' streaming read timed out after 180 seconds; retry the individual fetch')
+                    for item,_ in selector.select(min(5,left)):
+                        block=os.read(item.fileobj.fileno(),1024*1024)
+                        if not block:selector.unregister(item.fileobj);continue
+                        if item.data=='data':
+                            if len(probe)<4096:probe.extend(block[:4096-len(probe)])
+                            yield block
+                        elif len(errors)<65536:errors.extend(block[:65536-len(errors)])
+            code=proc.wait(timeout=max(1,deadline-time.monotonic()))
+            if code:
+                detail=(errors+probe).decode(errors='replace')
+                missing=('10007','NoSuchKey','The specified key does not exist','object does not exist','object not found','directory not found')
+                if any(s in detail for s in missing):raise FileNotFoundError('Remote object absent; verify the snapshot ID and existing bucket access')
+                if provider=='Wrangler':raise RuntimeError(_wrangler_failure('streaming read',code,detail))
+                raise RuntimeError('Rclone streaming read failed; check existing remote access/network, then retry the individual fetch')
+        except BaseException:
+            if proc.poll() is None:proc.kill();proc.wait()
+            raise
+
+
 class DirectoryStore:
     """Local test/offline object store. Never a live SQLite storage location."""
     def __init__(self,root):
@@ -112,6 +142,14 @@ class DirectoryStore:
                 shutil.copyfileobj(src,dst)
             return True
 
+    def iter_object(self,key):
+        with self._parent(key) as parent:
+            if parent is None:raise FileNotFoundError('Remote object absent')
+            fd,name=parent;source=self._file(name,fd)
+            if source is None:raise FileNotFoundError('Remote object absent')
+            with os.fdopen(source,'rb') as src:
+                for block in iter(lambda:src.read(1024*1024),b''):yield block
+
     def put(self,key,path):
         with self._parent(key,create=True) as (fd,name):
             temp='.outpost-put-'+uuid.uuid4().hex
@@ -158,6 +196,11 @@ class RcloneStore:
         if result.returncode:
             raise RuntimeError('Rclone read failed; check the existing remote and bucket-specific access locally')
         return True
+
+    def iter_object(self,key):
+        relative(key)
+        command=['rclone','cat',self.remote+'/'+key,'--s3-no-check-bucket','--retries','1','--contimeout','10s','--timeout','120s']
+        yield from _command_blocks(command,provider='Rclone')
 
     def put(self,key,path):
         relative(key)
@@ -213,6 +256,13 @@ class WranglerStore:
         if len(data)>129*1024*1024:raise ValueError('Payload exceeds bounded transport size')
         result=self.run(['put',self.bucket+'/'+key,'--pipe'],input_data=data)
         if result.returncode:raise RuntimeError(_wrangler_failure('piped upload',result.returncode,(result.stdout+result.stderr).decode(errors='replace')))
+
+    def iter_object(self,key):
+        relative(key);env=os.environ.copy()
+        if self.account_id:env['CLOUDFLARE_ACCOUNT_ID']=self.account_id
+        env['WRANGLER_LOG_PATH']=str(Path(tempfile.gettempdir())/'outpost-wrangler.log')
+        env['WRANGLER_SEND_METRICS']='false'
+        yield from _command_blocks(['wrangler','r2','object','get',self.bucket+'/'+key,'--pipe','--remote'],env)
 
     def read_payload(self,key):
         """Bounded stdout transfer: no local payload/read-back file."""
