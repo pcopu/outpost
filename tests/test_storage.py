@@ -167,6 +167,29 @@ class StorageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'checksum'):
             verify_remote(store,'alpha',self.snap['snapshot_id'])
 
+    def test_memory_readback_never_stages_payload_or_raw_chunks(self):
+        import hashlib,gzip,io
+        from outpost.storage import upload,verify_remote,DirectoryStore
+        class Memory(DirectoryStore):
+            packed=True;chunk_size=4096
+            def get(self,key,destination):
+                if '/payload/' in key:raise AssertionError('payload was downloaded to disk')
+                return super().get(key,destination)
+            def read_payload(self,key):return (self.root/key).read_bytes()
+            def hash_object(self,key):
+                try:return hashlib.sha256(self.read_payload(key)).hexdigest()
+                except FileNotFoundError:return None
+        store=Memory(self.base/'memory-store')
+        upload(self.lib,'alpha',self.snap['snapshot_id'],store)
+        result=verify_remote(store,'alpha',self.snap['snapshot_id'])
+        self.assertTrue(result['verified'])
+        manifest=json.loads((Path(self.snap['path'])/'manifest.json').read_text())
+        joined=b''.join((Path(self.snap['path'])/e['path']).read_bytes() for e in manifest['entries'] if e['kind']=='file')
+        expected=io.BytesIO()
+        with gzip.GzipFile(filename='',fileobj=expected,mode='wb',mtime=0,compresslevel=1) as out:out.write(joined[:4096])
+        actual=next(store.root.rglob('000000')).read_bytes()
+        self.assertEqual(expected.getvalue(),actual,'streamed gzip must match previously uploaded chunk bytes')
+
 
 if __name__=='__main__':
     unittest.main()

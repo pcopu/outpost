@@ -173,8 +173,9 @@ Wrangler uploads default to deterministic gzip chunks of 64 MiB of raw
 content. Previously committed uncompressed snapshots remain readable and
 reuploads retain their existing format. The transport
 descriptor maps every original file to its byte range, and the original
-manifest retains each file's SHA-256 and metadata. Raw, compressed, and read-back chunk files are bounded; no full archive is
-staged for transport. rclone stores snapshot files as separate
+manifest retains each file's SHA-256 and metadata. Upload stages one compressed chunk, without a separate raw copy. Wrangler
+read-back and live verification consume stdout into bounded memory, avoiding
+local payload download files. No full archive is staged for transport. rclone stores snapshot files as separate
 objects. Keep one transport format per remote snapshot prefix.
 
 Every object is downloaded and independently SHA-256 checked after upload;

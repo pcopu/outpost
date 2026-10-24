@@ -1,6 +1,8 @@
 """Bounded-memory, bounded-disk snapshot packing for the existing Wrangler CLI."""
 import json
 import gzip
+import io
+from contextlib import nullcontext
 import hashlib
 import math
 import os
@@ -22,24 +24,22 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
     if version not in (1,2):raise ValueError('Unsupported transport version')
     if not 1<=size<=128*1024*1024:
         raise ValueError('Invalid transport chunk size')
-    path=Path(scratch)/'chunk'
-    chunks=[];files=[];position=0;used=0;output=None
+    path=Path(scratch)/('compressed-chunk' if version==2 else 'chunk')
+    chunks=[];files=[];position=0;used=0;output=None;raw_output=None;raw_hash=hashlib.sha256()
     def flush():
-        nonlocal used,output
+        nonlocal used,output,raw_output,raw_hash
         if output is None:
             return
         output.close();output=None
+        if raw_output:raw_output.close();raw_output=None
         name=f'payload/{len(chunks):06d}'
         stored=path
         chunk={'path':name,'sha256':digest(path),'size':used}
         if version==2:
-            stored=Path(scratch)/'compressed-chunk'
-            with path.open('rb') as src,stored.open('wb') as raw,gzip.GzipFile(filename='',fileobj=raw,mode='wb',mtime=0,compresslevel=1) as dst:
-                shutil.copyfileobj(src,dst)
-            chunk.update(raw_sha256=chunk['sha256'],raw_size=used,encoding='gzip',sha256=digest(stored),size=stored.stat().st_size)
+            chunk.update(raw_sha256=raw_hash.hexdigest(),raw_size=used,encoding='gzip',sha256=digest(stored),size=stored.stat().st_size)
         chunks.append(chunk)
         ensure_object(store,base+'/'+name,stored,scratch)
-        used=0
+        used=0;raw_hash=hashlib.sha256()
     try:
         for entry in manifest['entries']:
             if entry['kind']!='file':
@@ -49,17 +49,19 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
                 remaining=entry['size']
                 while remaining:
                     if output is None:
-                        output=path.open('wb')
+                        raw_output=path.open('wb')
+                        output=gzip.GzipFile(filename='',fileobj=raw_output,mode='wb',mtime=0,compresslevel=1) if version==2 else raw_output
                     block=src.read(min(1024*1024,size-used,remaining))
                     if not block:
                         raise ValueError('Snapshot file shortened during packing')
-                    output.write(block);used+=len(block);position+=len(block);remaining-=len(block)
+                    output.write(block);raw_hash.update(block);used+=len(block);position+=len(block);remaining-=len(block)
                     if used==size:
                         flush()
         flush()
     finally:
         if output:
             output.close()
+        if raw_output:raw_output.close()
     descriptor={'format_version':version,'chunk_size':size,'files':files,'chunks':chunks,'total_bytes':position}
     out=Path(scratch)/'transport.json'
     write_json(out,descriptor)
@@ -94,7 +96,7 @@ def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=N
             if chunk.get('encoding')!='gzip' or chunk.get('raw_size')!=raw_size or not 0<chunk['size']<=raw_size+1024*1024:raise ValueError('Invalid compressed chunk layout')
             snapshot_id(chunk['raw_sha256'])
         snapshot_id(chunk['sha256'])
-    cached=-1;chunk_path=Path(scratch)/'download-chunk';decoded=Path(scratch)/'decoded-chunk';local_clones=0
+    cached=-1;chunk_path=Path(scratch)/'download-chunk';decoded=Path(scratch)/'decoded-chunk';local_clones=0;memory=None
     if not verify_only:destination.mkdir(parents=True)
     for spec,entry in zip(data['files'],expected):
         path=None if verify_only else destination/relative(spec['path'])
@@ -109,9 +111,17 @@ def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=N
                 index=offset//size
                 chunk=data['chunks'][index]
                 if cached!=index:
-                    if not store.get(base+'/'+chunk['path'],chunk_path) or chunk_path.stat().st_size!=chunk['size'] or digest(chunk_path)!=chunk['sha256']:
+                    if verify_only and hasattr(store,'read_payload'):
+                        payload=store.read_payload(base+'/'+chunk['path'])
+                        if len(payload)!=chunk['size'] or hashlib.sha256(payload).hexdigest()!=chunk['sha256']:raise ValueError('Downloaded chunk checksum mismatch')
+                        if version==2:
+                            with gzip.GzipFile(fileobj=io.BytesIO(payload)) as src:raw=src.read(chunk['raw_size']+1)
+                            if len(raw)!=chunk['raw_size'] or hashlib.sha256(raw).hexdigest()!=chunk['raw_sha256']:raise ValueError('Decoded chunk checksum mismatch')
+                        else:raw=payload
+                        memory=io.BytesIO(raw)
+                    elif not store.get(base+'/'+chunk['path'],chunk_path) or chunk_path.stat().st_size!=chunk['size'] or digest(chunk_path)!=chunk['sha256']:
                         raise ValueError('Downloaded chunk checksum mismatch; incomplete directory retained')
-                    if version==2:
+                    elif version==2:
                         with gzip.open(chunk_path,'rb') as src,decoded.open('wb') as unpacked:
                             remaining_raw=chunk['raw_size']
                             while remaining_raw:
@@ -122,7 +132,7 @@ def download_payload(store,base,manifest,marker,destination,scratch,reuse_from=N
                         if digest(decoded)!=chunk['raw_sha256']:raise ValueError('Decoded chunk checksum mismatch')
                     cached=index
                 amount=min(remaining,size-offset%size)
-                with (decoded if version==2 else chunk_path).open('rb') as src:
+                with (nullcontext(memory) if memory is not None else (decoded if version==2 else chunk_path).open('rb')) as src:
                     src.seek(offset%size)
                     rest=amount
                     while rest:

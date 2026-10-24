@@ -11,6 +11,8 @@ import subprocess
 import stat
 import tempfile
 import uuid
+import selectors
+import time
 
 from .archive import snapshot_id, snapshot_path, validate_manifest, verify_snapshot
 from .util import canonical, digest, relative, slug, write_json
@@ -195,6 +197,42 @@ class WranglerStore:
         if result.returncode:
             raise RuntimeError('Wrangler object upload failed; no completion marker was written')
 
+    def read_payload(self,key):
+        """Bounded stdout transfer: no local payload/read-back file."""
+        relative(key);env=os.environ.copy()
+        if self.account_id:env['CLOUDFLARE_ACCOUNT_ID']=self.account_id
+        env['WRANGLER_LOG_PATH']=str(Path(tempfile.gettempdir())/'outpost-wrangler.log')
+        env['WRANGLER_SEND_METRICS']='false'
+        data=bytearray();errors=bytearray();deadline=time.monotonic()+180
+        command=['wrangler','r2','object','get',self.bucket+'/'+key,'--pipe','--remote']
+        with subprocess.Popen(command,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE) as proc:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(proc.stdout,selectors.EVENT_READ,'data');selector.register(proc.stderr,selectors.EVENT_READ,'error')
+                    while selector.get_map():
+                        left=deadline-time.monotonic()
+                        if left<=0:raise RuntimeError('Wrangler streaming read timed out after 180 seconds')
+                        for item,_ in selector.select(min(5,left)):
+                            block=os.read(item.fileobj.fileno(),1024*1024)
+                            if not block:selector.unregister(item.fileobj);continue
+                            if item.data=='data':
+                                data.extend(block)
+                                if len(data)>129*1024*1024:raise ValueError('Remote chunk exceeds bounded transport size')
+                            elif len(errors)<65536:errors.extend(block[:65536-len(errors)])
+                code=proc.wait(timeout=max(1,deadline-time.monotonic()))
+                if code:
+                    error=(bytes(errors)+bytes(data[:4096])).decode(errors='replace')
+                    if any(s in error for s in ('10007','NoSuchKey','The specified key does not exist','object does not exist')):raise FileNotFoundError('Remote object absent')
+                    raise RuntimeError(f'Wrangler streaming read failed (exit {code}); no completion marker written')
+            except BaseException:
+                if proc.poll() is None:proc.kill();proc.wait()
+                raise
+        return data
+
+    def hash_object(self,key):
+        try:return hashlib.sha256(self.read_payload(key)).hexdigest()
+        except FileNotFoundError:return None
+
 
 def prefix(app,ident):
     return f'apps/{slug(app)}/snapshots/{snapshot_id(ident)}'
@@ -203,6 +241,14 @@ def prefix(app,ident):
 def ensure_object(store,key,path,scratch):
     readback=Path(scratch)/'readback'
     expected=digest(path)
+    if hasattr(store,'hash_object'):
+        actual=store.hash_object(key)
+        if actual is not None:
+            if actual!=expected:raise ValueError('Existing immutable object checksum mismatch; refusing overwrite')
+            return 'already_verified'
+        store.put(key,path)
+        if store.hash_object(key)!=expected:raise ValueError('Uploaded object read-back checksum mismatch')
+        return 'uploaded_and_verified'
     if store.get(key,readback):
         if digest(readback)!=expected:
             raise ValueError('Existing immutable object checksum mismatch; refusing overwrite')
