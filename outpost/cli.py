@@ -21,6 +21,10 @@ def parser():
     app=groups.add_parser('app').add_subparsers(dest='action',required=True)
     add=app.add_parser('add');add.add_argument('app');add.add_argument('--name',required=True);dry(add)
     app.add_parser('list')
+    production=groups.add_parser('production',help='Versioned sources, transcripts and reusable generation files').add_subparsers(dest='action',required=True)
+    init=production.add_parser('init');init.add_argument('app');init.add_argument('directory',type=Path);dry(init)
+    ingest=production.add_parser('import');ingest.add_argument('app');ingest.add_argument('directory',type=Path);dry(ingest)
+    show=production.add_parser('show');show.add_argument('app');show.add_argument('video',nargs='?')
     asset=groups.add_parser('asset').add_subparsers(dest='action',required=True)
     add=asset.add_parser('import');add.add_argument('app');add.add_argument('file',type=Path)
     add.add_argument('--kind',choices=['video','image','audio','document','other'],default='other')
@@ -95,6 +99,11 @@ def execute(args):
         return save(lib.root,reference(args),dry_run) if args.action=='configure' else (load(lib.root) or {'configured':False})
     if args.group=='app':
         return lib.register(args.app,args.name,dry_run) if args.action=='add' else lib.apps()
+    if args.group=='production':
+        from .production import initialize_workspace, import_production, show_production
+        if args.action=='init':return initialize_workspace(lib,args.app,args.directory,dry_run)
+        if args.action=='import':return import_production(lib,args.app,args.directory,dry_run)
+        return show_production(lib,args.app,args.video)
     if args.group=='asset':
         if args.action=='fetch':
             from .fetch import fetch_file

@@ -10,6 +10,8 @@ README.md for commands, layout, auth references, and backup/restore details.
 - `outpost/library.py`, `schema.sql`: catalog, records, asset and baseline imports.
 - `outpost/model.py`, `bundle.py`: source identities, full records, histories,
   lineage and transactional, checksum-validated bundle imports.
+- `outpost/production.py`: production workspaces, transcript and source history,
+  reusable raw generation files and links to published variants.
 - `outpost/configuration.py`: nonsecret default backend references.
 - `outpost/util.py`: local filesystem guards, locking, hashing, secret screening.
 - `outpost/archive.py`: SQLite snapshots, manifests, export and restore.

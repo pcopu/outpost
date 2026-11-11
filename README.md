@@ -108,6 +108,77 @@ model. Missing source relationships, timestamps, or comment bodies stay
 missing. Overlapping metric reports are observations, not additive totals.
 The CLI tracks saved information; it does not publish content or launch ads.
 
+## Production workspaces
+
+An app can also keep editable sources, transcripts, audio, render revisions and
+reusable raw generation files. Create a source workspace outside the managed
+catalog, then edit its `production.json`.
+
+```sh
+outpost production init example ~/creative/example
+outpost production import example ~/creative/example --dry-run
+outpost production import example ~/creative/example
+outpost production show example
+outpost production show example main-film
+```
+
+The initializer creates `raw/`, `videos/` and this manifest. Every video has a
+stable ID within its app. Directory inputs retain their relative source paths.
+
+```json
+{
+  "format_version": 1,
+  "app_id": "example",
+  "raw_directory": "raw",
+  "videos": [
+    {
+      "id": "main-film",
+      "title": "Main film",
+      "directory": "videos/main-film",
+      "uses": ["raw/landscape.jpg"]
+    },
+    {
+      "id": "short-cut",
+      "title": "Short cut",
+      "directory": "videos/short-cut",
+      "derived_from": "main-film",
+      "uses": ["raw/landscape.jpg"],
+      "posts": ["example:post:1"]
+    }
+  ]
+}
+```
+
+Put reusable generation originals in `raw/`, including images, footage, audio,
+prompts and provenance files. A raw file is retained even before a video uses it.
+Inside each video directory, the `sources/`, `transcripts/`, `audio/`, `renders/`
+and `references/` subdirectories determine asset roles. SRT and VTT files always
+default to transcripts. A name such as `captions.en.srt` records language `en`.
+Other files default to editable sources. Every selected regular file is hashed,
+screened and imported. The dry-run report lists excluded credentials, sessions,+caches and databases. Symlink inputs fail visibly.
+
+For existing directory layouts, replace or supplement `directory` with an
+explicit `files` array. Each entry has a workspace-relative `path`, optional
+`role`, `language`, `variant`, `revision` and other provenance fields. For example,
+`{"path":"exports/cut.mp4","role":"render","variant":"portrait","revision":"v2"}`.
+Paths must stay inside the workspace. `uses` links raw assets to multiple videos
+without duplicating their stored bytes. The reserved ID `raw` identifies the
+app's shared generation collection. `posts` must reference existing organic or
+paid publication entities in the same app.
+
+Imports preserve all selected file bytes and append immutable production
+observations through the existing bundle importer. A changed source, transcript,
+prompt, manifest or render creates a new revision. The latest production view
+shows current file links while earlier observations and assets remain queryable.
+Removing a file from the workspace does not delete its earlier imported bytes.
+Snapshots include the production history and all imported files. Normal Outpost
+snapshot upload, verification, restore and on-demand retrieval apply.
+
+Use `source_records --filter kind=video_production` through `catalog query` for
+production history, `source_asset_links` for the file relationships, and
+`lineage` for `derived_from` and `published_as` links. Organic metrics retain
+their own captured timestamps through the existing `metrics` command.
+
 ## Backup, upload, restore
 
 ```sh
