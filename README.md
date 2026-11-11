@@ -3,7 +3,9 @@
 A small CLI for marketing files and social/ad catalogs across multiple apps.
 Each app has its own SQLite database, original files, provenance, snapshots,
 and remote object prefix. Python 3.10+ on macOS or Linux; no runtime Python
-dependencies, web UI, background processes, or hosted model calls.
+dependencies. The optional Cloudflare browser library is documented in
+[viewer/README.md](viewer/README.md). Model calls and automatic publication are
+outside the CLI.
 
 Run from a checkout with `python3 -m outpost`, or install without downloads:
 

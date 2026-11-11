@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Outpost</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">Outpost<span>Production library</span></a>
+    <label id="project-label" hidden>Project<select id="project"></select></label>
+    <button id="logout" hidden>Lock library</button>
+  </header>
+  <main>
+    <section id="login">
+      <h1>Open Outpost</h1>
+      <form id="login-form">
+        <label for="key">Access key</label>
+        <div class="unlock">
+          <input id="key" type="password" autocomplete="current-password" required>
+          <button>Open library</button>
+        </div>
+      </form>
+    </section>
+    <p id="notice" role="status" hidden></p>
+    <section id="workspace" hidden>
+      <div class="project-heading">
+        <h1 id="project-title"></h1>
+        <span id="counts"></span>
+      </div>
+      <nav aria-label="Library sections">
+        <button data-view="videos" aria-current="page">Videos</button>
+        <button data-view="raw">Raw assets</button>
+        <button data-view="posts">Organic posts</button>
+        <button data-view="ads">Ad usage</button>
+      </nav>
+      <div id="video-view" class="video-layout">
+        <aside>
+          <label class="search-label" for="search">Search videos</label>
+          <input id="search" type="search" placeholder="Search the collection">
+          <div id="video-list"></div>
+        </aside>
+        <article id="detail">
+          <div class="empty">Choose a video to view its renders and source files.</div>
+        </article>
+      </div>
+      <section id="raw-view" hidden>
+        <div class="section-heading">
+          <h2>Raw generation assets</h2>
+          <input id="raw-search" type="search" aria-label="Search raw assets" placeholder="Search files">
+        </div>
+        <div id="raw-files"></div>
+      </section>
+      <section id="posts-view" hidden><h2>Organic posts</h2><div id="posts"></div></section>
+      <section id="ads-view" hidden><h2>Ad usage</h2><div id="ads"></div></section>
+    </section>
+  </main>
+  <footer id="archive-info"></footer>
+</body>
+</html>

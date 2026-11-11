@@ -18,6 +18,8 @@ README.md for commands, layout, auth references, and backup/restore details.
 - `outpost/fetch.py`: verified individual media retrieval to explicit external files.
 - `outpost/storage.py`, `packed.py`: existing CLI auth references, immutable
   remote uploads, independent SHA-256 read-back, bounded snapshot chunks.
+- `outpost/viewer.py`, `viewer/`: private project exports and the optional
+  authenticated Cloudflare browser library with manual observation updates.
 - `tests/`: local synthetic regression tests and a data-free legacy DDL fixture.
 
 ## Invariants
@@ -49,7 +51,8 @@ app/snapshot identity, all selected chunks and the requested file before atomic
 publication; report response-body bytes separately from materialized bytes.
 Keep privacy holds distinct from missing offloaded payloads.
 Use streaming remote verification when full local downloads are not requested;
-never substitute HEAD/ETag or metadata-only checks for content proof. No background processes or hosted workflows.
+never substitute HEAD/ETag or metadata-only checks for content proof. No background publication, model calls or automatic metric collection. The
+optional authenticated viewer is deployed only when the user requests it.
 
 ## Verification and publication
 
