@@ -10,7 +10,7 @@ import uuid
 import zlib
 
 from .archive import snapshot_id, validate_manifest
-from .storage import prefix
+from .storage import prefix, validate_completion_marker
 from .util import relative
 
 
@@ -105,9 +105,8 @@ def fetch_file(lib,store,app,ident,source_path,destination,dry_run=False):
         raise ValueError('Select an app-relative marketing file under files/, not a catalog or identity file')
     stats={'remote_metadata_bytes':0,'remote_payload_bytes':0,'materialized_bytes':0,'chunks_fetched':0}
     with _output_parent(destination,lib.root) as (parent,name,path):
-        marker=json.loads(_metadata(store,base+'/COMMITTED.json',stats,65536))
-        if marker.get('format_version')!=1 or marker.get('app_id')!=app or marker.get('snapshot_id')!=ident:
-            raise ValueError('Completion marker identity mismatch')
+        marker=validate_completion_marker(
+            json.loads(_metadata(store,base+'/COMMITTED.json',stats,65536)),app,ident)
         mp=_metadata(store,base+'/manifest.json',stats)
         if hashlib.sha256(mp).hexdigest()!=marker['manifest_sha256']:raise ValueError('Manifest checksum mismatch')
         manifest=validate_manifest(json.loads(mp))

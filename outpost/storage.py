@@ -305,6 +305,26 @@ def prefix(app,ident):
     return f'apps/{slug(app)}/snapshots/{snapshot_id(ident)}'
 
 
+def validate_completion_marker(marker,app,ident):
+    """Admit only known completion protocols before reading snapshot data."""
+    if not isinstance(marker,dict):
+        raise ValueError('Invalid snapshot completion marker')
+    if type(marker.get('format_version')) is not int or marker['format_version']!=1:
+        raise ValueError('Unsupported snapshot completion format')
+    if marker.get('app_id')!=app or marker.get('snapshot_id')!=ident:
+        raise ValueError('Completion marker identity mismatch')
+    transport=marker.get('transport')
+    if transport is not None and transport!='packed-v1':
+        raise ValueError('Unsupported snapshot transport')
+    required=['manifest_sha256']
+    if transport=='packed-v1':required.append('transport_sha256')
+    for field in required:
+        value=marker.get(field)
+        if not isinstance(value,str) or not re.fullmatch('[0-9a-f]{64}',value):
+            raise ValueError('Invalid completion marker checksum: '+field)
+    return marker
+
+
 def ensure_object(store,key,path,scratch):
     readback=Path(scratch)/'readback'
     expected=digest(path)
@@ -390,9 +410,7 @@ def download(store,app,ident,destination,dry_run=False,reuse_from=None):
         commit=Path(scratch)/'commit';mp=Path(scratch)/'manifest'
         if not store.get(base+'/COMMITTED.json',commit):
             raise ValueError('Snapshot upload has no verified completion marker')
-        marker=json.loads(commit.read_text())
-        if marker.get('app_id')!=app or marker.get('snapshot_id')!=ident:
-            raise ValueError('Completion marker identity mismatch')
+        marker=validate_completion_marker(json.loads(commit.read_text()),app,ident)
         if not store.get(base+'/manifest.json',mp) or digest(mp)!=marker['manifest_sha256']:
             raise ValueError('Manifest read-back checksum mismatch')
         manifest=validate_manifest(json.loads(mp.read_text()))
@@ -431,8 +449,7 @@ def verify_remote(store,app,ident,expected_manifest=None):
     with tempfile.TemporaryDirectory(prefix='outpost-stream-check-') as scratch:
         commit=Path(scratch)/'commit';mp=Path(scratch)/'manifest'
         if not store.get(base+'/COMMITTED.json',commit):raise ValueError('Snapshot upload has no verified completion marker')
-        marker=json.loads(commit.read_text())
-        if marker.get('app_id')!=app or marker.get('snapshot_id')!=ident:raise ValueError('Completion marker identity mismatch')
+        marker=validate_completion_marker(json.loads(commit.read_text()),app,ident)
         if not store.get(base+'/manifest.json',mp) or digest(mp)!=marker['manifest_sha256']:raise ValueError('Manifest read-back checksum mismatch')
         manifest=validate_manifest(json.loads(mp.read_text()))
         if manifest['app_id']!=app or manifest['snapshot_id']!=ident:raise ValueError('Manifest identity mismatch')
