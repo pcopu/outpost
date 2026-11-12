@@ -184,6 +184,25 @@ async function media(request, env, item) {
   }
   return new Response(body, {status: partial ? 206 : 200, headers});
 }
+async function archiveObject(request, env, path) {
+  const match = /^\/api\/archive\/([a-z][a-z0-9-]{0,63})\/snapshots\/([a-f0-9]{64})\/(COMMITTED\.json|manifest\.json|transport\.json|payload\/[0-9]{6})$/.exec(path);
+  if (!match) throw new HttpError(404, 'Snapshot object not found');
+  const key = `apps/${match[1]}/snapshots/${match[2]}/${match[3]}`;
+  if (request.method === 'GET') {
+    const object = await env.MEDIA.get(key);
+    if (!object?.body) throw new HttpError(404, 'Archived object is absent');
+    return new Response(object.body, {headers: {...security, 'Content-Type': 'application/octet-stream'}});
+  }
+  if (request.method !== 'PUT') throw new HttpError(405, 'Method not allowed');
+  const sha256 = request.headers.get('X-Outpost-SHA256');
+  const length = Number(request.headers.get('Content-Length'));
+  if (!/^[a-f0-9]{64}$/.test(sha256 || '') || !request.headers.has('Content-Length') || !Number.isSafeInteger(length) || length < 0) throw new HttpError(400, 'Checksum and byte count required');
+  if (length > 80 * 1024 * 1024) throw new HttpError(413, 'Snapshot object exceeds the bounded size');
+  const checksum = Uint8Array.from(sha256.match(/../g), value => Number.parseInt(value, 16)).buffer;
+  const saved = await env.MEDIA.put(key, request.body || new Uint8Array(), {sha256: checksum, onlyIf: {etagDoesNotMatch: '*'}, httpMetadata: {contentType: 'application/octet-stream', cacheControl: 'private, no-store'}});
+  if (!saved) throw new HttpError(409, 'Immutable archive object already exists');
+  return json({stored: true, sha256, bytes: length}, 201);
+}
 async function serve(request, env) {
   const url = new URL(request.url), path = url.pathname;
   if (!path.startsWith('/api/')) {
@@ -199,6 +218,10 @@ async function serve(request, env) {
   }
   if (path === '/api/logout' && request.method === 'POST') return json({ok: true}, 200, {'Set-Cookie': 'outpost_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'});
   const isAdmin = await admin(request, env);
+  if (path.startsWith('/api/archive/')) {
+    if (!isAdmin) throw new HttpError(401, 'Archive admin authorization required');
+    return archiveObject(request, env, path);
+  }
   if (path === '/api/launch' && request.method === 'POST') {
     if (!isAdmin) throw new HttpError(401, 'Update authorization required');
     return json({ticket: await ticket(env, 'launch', 90)});

@@ -10,6 +10,7 @@ from . import __version__
 from .archive import verify_snapshot
 from .library import Library, READ_TABLES
 from .storage import DirectoryStore, RcloneStore, WranglerStore, download, upload,verify_remote
+from .gateway import WorkerStore
 from .util import write_json
 
 
@@ -66,6 +67,8 @@ def transport(p,required=False):
     store=p.add_mutually_exclusive_group(required=required)
     store.add_argument('--rclone',help='Existing remote:private-bucket reference; no credentials copied')
     store.add_argument('--wrangler-bucket',help='Private bucket accessed through an existing Wrangler login')
+    store.add_argument('--worker-url',help='HTTPS origin of the private Outpost archive Worker')
+    p.add_argument('--token-env',default='OUTPOST_ARCHIVE_TOKEN',help='Existing environment variable containing the archive admin token')
     store.add_argument('--local-store',type=Path,help='Offline/test object directory')
     p.add_argument('--account-id',help='Explicit Wrangler account ID (not a token)')
     p.add_argument('--private-confirmed',action='store_true',help='Operator has verified no public bucket URL/domain')
@@ -75,11 +78,12 @@ def reference(args):
     base={'format_version':1,'private_confirmed':args.private_confirmed}
     if args.local_store:return dict(base,backend='directory',path=str(args.local_store.expanduser().resolve()))
     if args.rclone:return dict(base,backend='rclone',remote=args.rclone)
+    if args.worker_url:return dict(base,backend='worker',url=args.worker_url,token_env=args.token_env)
     return dict(base,backend='wrangler',bucket=args.wrangler_bucket,account_id=args.account_id)
 
 
 def store(args,lib):
-    if not (args.local_store or args.rclone or args.wrangler_bucket):
+    if not (args.local_store or args.rclone or args.wrangler_bucket or args.worker_url):
         from .configuration import backend,load
         config=load(lib.root)
         if not config:raise ValueError('Configure storage or specify an existing private backend')
@@ -88,6 +92,7 @@ def store(args,lib):
         return DirectoryStore(args.local_store)
     if not args.private_confirmed:
         raise ValueError('Verify bucket privacy, then pass --private-confirmed; credentials stay in the existing CLI')
+    if args.worker_url:return WorkerStore(args.worker_url,args.token_env)
     return RcloneStore(args.rclone) if args.rclone else WranglerStore(args.wrangler_bucket,args.account_id)
 
 

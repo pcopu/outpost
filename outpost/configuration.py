@@ -5,6 +5,7 @@ from pathlib import Path
 import uuid
 
 from .storage import DirectoryStore,RcloneStore,WranglerStore
+from .gateway import WorkerStore
 from .util import lock,secret_data,write_json
 
 
@@ -20,6 +21,9 @@ def validate(config):
         if not config.get('account_id'):
             raise ValueError('An explicit account ID is required for a default Wrangler reference')
         WranglerStore(config['bucket'],config['account_id'])
+    elif backend=='worker':
+        allowed|={'url','token_env'}
+        WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'))
     elif backend=='rclone':
         allowed|={'remote'};RcloneStore(config['remote'])
     else:
@@ -64,4 +68,5 @@ def backend(config):
     validate(config)
     if config['backend']=='directory':return DirectoryStore(config['path'])
     if config['backend']=='rclone':return RcloneStore(config['remote'])
+    if config['backend']=='worker':return WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'))
     return WranglerStore(config['bucket'],config['account_id'])

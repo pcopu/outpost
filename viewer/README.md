@@ -71,3 +71,28 @@ Publication status and metrics stay exactly as last recorded. An elapsed schedul
 does not confirm publication. Counts with no verified observation stay empty.
 The viewer displays saved organic and advertising records and supports manual
 updates from an operator.
+
+## Archive CLI connection
+
+The same private Worker exposes bounded snapshot-object transfers for Outpost's
+CLI. It accepts admin-authenticated GET and immutable PUT requests under app and
+snapshot prefixes. R2 checks the supplied SHA-256 before accepting a PUT. The
+CLI independently reads and hashes every object before committing an archive.
+Reader sessions can stream catalog assets through the viewer.
+
+Supply the existing deployment admin token through `OUTPOST_ARCHIVE_TOKEN` in
+the operator's environment. A nonsecret backend reference can store its variable
+name. Redirects fail visibly to keep credentials scoped to the chosen origin.
+
+```sh
+outpost snapshot upload example SNAPSHOT_ID \
+  --worker-url https://your-worker.example \
+  --private-confirmed --dry-run
+outpost snapshot upload example SNAPSHOT_ID \
+  --worker-url https://your-worker.example \
+  --private-confirmed
+```
+
+`--token-env` selects another existing environment variable. The archive uses the
+same packed snapshot protocol and recovery checks as the Wrangler connection.
+The default backend remains the one explicitly configured in the local registry.

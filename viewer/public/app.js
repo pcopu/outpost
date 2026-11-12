@@ -109,6 +109,11 @@ function chooseVideo(video) {
   if (links.children.length) target.append(node('h3', null, 'Related editions'), links);
   const posts = allPosts().filter(p => p.videoId === video.id);
   if (posts.length) { target.append(node('h3', null, 'Posting history')); posts.forEach(post => target.append(postRow(post))); }
+  if (video.metadata?.transcript) {
+    const transcript = node('details');
+    transcript.append(node('summary', null, 'Transcript'), node('pre', 'source-preview', video.metadata.transcript));
+    target.append(transcript);
+  }
   target.append(sourceGroups(video));
   history.replaceState(null, '', `/?project=${encodeURIComponent(state.project.id)}&video=${encodeURIComponent(video.id)}`);
 }

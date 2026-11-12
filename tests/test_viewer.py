@@ -16,12 +16,20 @@ class ViewerExportTests(unittest.TestCase):
             lib = Library(base / 'library')
             lib.register('alpha', 'Alpha')
             workspace = base / 'production'; (workspace / 'raw').mkdir(parents=True)
+            (workspace / 'raw' / 'research.txt').write_text('Reusable background research')
             (workspace / 'render.mp4').write_bytes(b'first render')
             (workspace / 'captions.en.srt').write_text('1\n00:00:00,000 --> 00:00:01,000\nHello\n')
             (workspace / 'production.json').write_text(json.dumps({'format_version': 1, 'app_id': 'alpha', 'videos': [{'id': 'film', 'files': [{'path': 'render.mp4', 'role': 'render'}, {'path': 'captions.en.srt', 'role': 'transcript'}]}]}))
             from outpost.production import import_production
             import_production(lib, 'alpha', workspace)
+            (workspace / 'raw' / 'research.txt').unlink()
             (workspace / 'render.mp4').write_bytes(b'second render')
+            import_production(lib, 'alpha', workspace)
+            config = json.loads((workspace / 'production.json').read_text())
+            config['videos'][0]['files'] = [{'path': 'captions.en.srt', 'role': 'transcript'}]
+            config['videos'][0]['archived_renders'] = ['first render', 'second render']
+            (workspace / 'production.json').write_text(json.dumps(config))
+            (workspace / 'render.mp4').unlink()
             import_production(lib, 'alpha', workspace)
             snap = lib.snapshot('alpha')
             path = Path(snap['path']); manifest = json.loads((path / 'manifest.json').read_text())
@@ -39,6 +47,7 @@ class ViewerExportTests(unittest.TestCase):
             self.assertTrue(any(f.get('language') == 'en' for f in result['videos'][0]['files']))
             self.assertTrue(all(a['location']['parts'] for a in result['assets']))
             self.assertEqual([], result['posts'])
+            self.assertTrue(any(f['path'] == 'raw/research.txt' for f in result['raw']))
             with self.assertRaises(ValueError): build_project(path, dict(transport, total_bytes=offset+1))
             (path/'catalog.sqlite3').chmod(0o600)
             (path/'catalog.sqlite3').write_bytes(b'corrupt')

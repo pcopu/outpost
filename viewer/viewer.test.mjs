@@ -17,7 +17,9 @@ function bucket(data = {}) {
       const old = entries.get(key);
       if (options?.onlyIf?.etagMatches && old?.etag !== options.onlyIf.etagMatches) return null;
       if (options?.onlyIf?.etagDoesNotMatch === '*' && old) return null;
-      entries.set(key, {bytes: new TextEncoder().encode(value), etag: crypto.randomUUID()});
+      const bytes = new Uint8Array(await new Response(value).arrayBuffer());
+      if (options?.sha256) assert.equal(Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex'), Buffer.from(options.sha256).toString('hex'));
+      entries.set(key, {bytes, etag: crypto.randomUUID()});
       return {etag: entries.get(key).etag};
     }
   };
@@ -91,4 +93,20 @@ test('published observations preserve a verified date when the exact time is unk
   const response = await send(event);
   assert.equal(response.status, 201);assert.equal((await response.json()).postedDate, '2026-01-01');
   assert.equal((await send({...event, id: crypto.randomUUID(), postedDate: '2026-02-31'})).status, 400);
+});
+test('archive transport is admin-only, immutable and scoped to snapshot objects', async () => {
+  const {env} = fixture();
+  const path = '/api/archive/alpha/snapshots/'+'a'.repeat(64)+'/payload/000000';
+  const bytes = new TextEncoder().encode('checked archive bytes');
+  const sha = Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex');
+  const cookie = await login(env);
+  assert.equal((await call(env, path, {headers: {cookie}})).status, 401);
+  const headers = {authorization: 'Bearer test-admin', 'x-outpost-sha256': sha, 'content-length': String(bytes.length)};
+  assert.equal((await call(env, path, {method: 'PUT', headers, body: bytes})).status, 201);
+  assert.equal((await call(env, path, {method: 'PUT', headers, body: bytes})).status, 409);
+  const downloaded = await call(env, path, {headers: {authorization: 'Bearer test-admin'}});
+  assert.equal(downloaded.status, 200);assert.equal(await downloaded.text(), 'checked archive bytes');
+  assert.equal((await call(env, path, {method: 'PUT', headers: {...headers, 'x-outpost-sha256': 'bad'}, body: bytes})).status, 400);
+  assert.equal((await call(env, '/api/archive/alpha/viewer/index.json', {headers: {authorization: 'Bearer test-admin'}})).status, 404);
+  assert.equal((await call(env, path, {method: 'DELETE', headers: {authorization: 'Bearer test-admin'}})).status, 405);
 });

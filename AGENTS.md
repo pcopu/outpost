@@ -16,6 +16,8 @@ README.md for commands, layout, auth references, and backup/restore details.
 - `outpost/util.py`: local filesystem guards, locking, hashing, secret screening.
 - `outpost/archive.py`: SQLite snapshots, manifests, export and restore.
 - `outpost/fetch.py`: verified individual media retrieval to explicit external files.
+- `outpost/gateway.py`: bounded, immutable archive transfers through the optional
+  private Worker with environment-owned admin authentication.
 - `outpost/storage.py`, `packed.py`: existing CLI auth references, immutable
   remote uploads, independent SHA-256 read-back, bounded snapshot chunks.
 - `outpost/viewer.py`, `viewer/`: private project exports and the optional

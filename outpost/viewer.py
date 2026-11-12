@@ -1,32 +1,12 @@
 """Build private browser catalogs from checked, immutable app snapshots."""
 import argparse
 import json
-import math
 import mimetypes
 from pathlib import Path
 
 from .archive import validate_manifest
+from .fetch import _transport
 from .util import canonical, connect, digest, relative
-
-
-def _transport_files(manifest, transport):
-    size = transport.get('chunk_size')
-    if transport.get('format_version') not in (1, 2) or not isinstance(size, int) or not 1 <= size <= 128 * 1024 * 1024:
-        raise ValueError('Invalid snapshot transport')
-    position = 0
-    expected = []
-    for entry in manifest['entries']:
-        if entry['kind'] == 'file':
-            expected.append({'path': entry['path'], 'offset': position, 'size': entry['size']})
-            position += entry['size']
-    if transport.get('files') != expected or transport.get('total_bytes') != position or len(transport.get('chunks', [])) != math.ceil(position / size):
-        raise ValueError('Transport does not match snapshot files')
-    for index, chunk in enumerate(transport['chunks']):
-        if chunk['path'] != f'payload/{index:06d}' or len(chunk['sha256']) != 64:
-            raise ValueError('Invalid snapshot chunk')
-        if transport['format_version'] == 2 and (chunk.get('encoding') != 'gzip' or chunk.get('raw_size') != min(size, position - index * size)):
-            raise ValueError('Invalid compressed chunk')
-    return {item['path']: item for item in expected}
 
 
 def _location(app, snapshot, item, transport):
@@ -51,7 +31,8 @@ def build_project(snapshot_directory, transport, locations=None):
     declared = {e['path']: e for e in manifest['entries'] if e['kind'] == 'file'}
     if digest(root / 'catalog.sqlite3') != declared['catalog.sqlite3']['sha256']:
         raise ValueError('Snapshot catalog checksum mismatch')
-    files = _transport_files(manifest, transport)
+    _transport(transport, manifest)
+    files = {item['path']: item for item in transport['files']}
     app = manifest['app_id']
     metadata = json.loads((root / 'app.json').read_text())
     if metadata['app_id'] != app or digest(root / 'app.json') != declared['app.json']['sha256']:
@@ -107,6 +88,10 @@ def build_project(snapshot_directory, transport, locations=None):
     for entity in entities:
         if entity['kind'] == 'generation_assets':
             raw.extend(json.loads(entity['metadata_json']).get('files', []))
+            for record in records:
+                if record['entity_key'] == entity['entity_key'] and record['kind'] == 'generation_assets':
+                    raw.extend(json.loads(record['payload_json']).get('files', []))
+    raw = list({canonical(file): file for file in raw}.values())
     posts = []
     for entity in entities:
         if entity['kind'] not in ('post', 'organic_post'):
