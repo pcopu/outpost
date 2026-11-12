@@ -1,4 +1,4 @@
-"""Local nonsecret storage references; authentication stays with existing CLIs."""
+"""Local nonsecret storage references and operator-owned authentication."""
 import json
 import os
 from pathlib import Path

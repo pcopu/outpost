@@ -210,7 +210,8 @@ catalog counts before admitting the result. Mode bits, nanosecond mtimes,
 and safe internal symlinks round-trip. Ownership, ACLs, resource forks, and
 extended attributes are not portable backup guarantees.
 
-For private R2 storage, reference existing credentials through either tool.
+For private R2 storage, reference existing CLI credentials or the deployed
+[private archive Worker](viewer/README.md#archive-cli-connection).
 A default backend stores references only, never tokens:
 
 ```sh
@@ -220,7 +221,8 @@ outpost storage show
 ```
 
 Once configured, upload/download need no backend flags. Explicit command
-options override the saved reference. Credentials remain in the external CLI.
+options override the saved reference. CLI credentials remain in their external
+tool. The Worker connection reads its token from the named environment variable.
 Without a default, select a backend for each transfer:
 
 ```sh
@@ -280,7 +282,8 @@ the bound manifest. It uses bounded temporary buffers, and compares a local
 manifest when available. It reports `full_local_restore: false`: this is
 content verification, not a newly restored catalog query. A matching remote
 catalog hash proves the catalog bytes equal the checked local snapshot.
-Streaming verification currently requires packed snapshots (Wrangler).
+Streaming verification requires packed snapshots from Wrangler or the private
+Worker connection.
 
 For low-disk verification, download can take `--reuse-from LOCAL_SNAPSHOT`.
 Matching local files are independently cloned into the fresh restore while

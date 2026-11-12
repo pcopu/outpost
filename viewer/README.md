@@ -93,6 +93,7 @@ outpost snapshot upload example SNAPSHOT_ID \
   --private-confirmed
 ```
 
-`--token-env` selects another existing environment variable. The archive uses the
-same packed snapshot protocol and recovery checks as the Wrangler connection.
+`--token-env` selects another existing environment variable. The Worker connection keeps up to two bounded payload uploads in flight and
+waits for every full read-back before storing transport or completion metadata.
+It uses the same packed snapshot protocol and recovery checks as the Wrangler connection.
 The default backend remains the one explicitly configured in the local registry.

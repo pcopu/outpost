@@ -3,6 +3,8 @@ import json
 import gzip
 import io
 from contextlib import nullcontext
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import math
 import os
@@ -25,6 +27,8 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
     memory_mode=version==2 and hasattr(store,'put_payload')
     if not 1<=size<=128*1024*1024:
         raise ValueError('Invalid transport chunk size')
+    pool=ThreadPoolExecutor(max_workers=2) if memory_mode and getattr(store,'parallel_uploads',False) else None
+    pending=deque()
     path=Path(scratch)/('compressed-chunk' if version==2 else 'chunk')
     chunks=[];files=[];position=0;used=0;output=None;raw_output=None;raw_hash=hashlib.sha256()
     def flush():
@@ -43,7 +47,12 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
         chunks.append(chunk)
         if memory_mode:
             from .storage import ensure_payload
-            ensure_payload(store,base+'/'+name,payload)
+            if pool:
+                # Bound retained compressed data to two in-flight chunks plus
+                # the next producer buffer. Each job includes full read-back.
+                if len(pending)==2:pending.popleft().result()
+                pending.append(pool.submit(ensure_payload,store,base+'/'+name,payload))
+            else:ensure_payload(store,base+'/'+name,payload)
         else:ensure_object(store,base+'/'+name,stored,scratch)
         used=0;raw_hash=hashlib.sha256()
     try:
@@ -64,7 +73,9 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
                     if used==size:
                         flush()
         flush()
+        for task in pending:task.result()
     finally:
+        if pool:pool.shutdown(wait=True)
         if output:
             output.close()
         if raw_output:raw_output.close()

@@ -17,6 +17,7 @@ class WorkerStore:
     packed = True
     chunk_size = 64 * 1024 * 1024
     compress_payload = True
+    parallel_uploads = True
 
     def __init__(self, url, token_env='OUTPOST_ARCHIVE_TOKEN'):
         parsed = urlsplit(url)
