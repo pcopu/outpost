@@ -9,7 +9,7 @@ snapshots. An optional direct object map supports existing R2 media collections.
 ## Checks
 
 ```sh
-node --test viewer/viewer.test.mjs
+node --test viewer/*.test.mjs
 python3 -W error::ResourceWarning -m unittest discover -s tests -v
 ```
 

@@ -1,5 +1,7 @@
+import {selectRender} from './renders.mjs';
+
 const $ = id => document.getElementById(id);
-const state = {project: null, video: null, projectId: null, assets: new Map()};
+const state = {project: null, video: null, projectId: null, render: null, assets: new Map()};
 const node = (tag, className, text) => {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -76,8 +78,13 @@ function sourceGroups(video) {
   }
   return groups;
 }
+function updateLocation() {
+  const query = new URLSearchParams({project: state.project.id, video: state.video.id});
+  if (state.render) query.set('render', state.render);
+  history.replaceState(null, '', '/?' + query);
+}
 function chooseVideo(video) {
-  state.video = video; drawList();
+  state.video = video; state.render = null; drawList();
   const target = $('detail'); target.replaceChildren();
   const heading = node('div', 'detail-heading'); heading.append(node('h2', null, video.title)); target.append(heading);
   const renders = renderFiles(video);
@@ -89,9 +96,12 @@ function chooseVideo(video) {
       const option = node('option', null, `${index + 1} · ${file.path.split('/').slice(-2).join('/')} · ${file.sha256.slice(0, 8)}${file.reviewStatus ? ' · ' + file.reviewStatus : ''}`);
       option.value = file.sha256; select.append(option);
     });
-    const preferred = [...renders].reverse().find(f => f.reviewStatus !== 'rejected') || renders[0];
-    select.value = preferred.sha256; player.src = mediaUrl(preferred.sha256);
-    select.addEventListener('change', () => { player.pause(); player.src = mediaUrl(select.value); player.load(); });
+    const preferred = selectRender(renders, new URLSearchParams(location.search).get('render'));
+    state.render = preferred.sha256; select.value = state.render; player.src = mediaUrl(state.render);
+    select.addEventListener('change', () => {
+      state.render = selectRender(renders, select.value).sha256;
+      select.value = state.render; player.pause(); player.src = mediaUrl(state.render); player.load(); updateLocation();
+    });
     player.addEventListener('error', () => notice('This render could not be streamed. Refresh the project or download the file.'));
     target.append(select);
   } else target.append(node('div', 'empty', 'No render in R2. Sources are available below.'));
@@ -115,7 +125,7 @@ function chooseVideo(video) {
     target.append(transcript);
   }
   target.append(sourceGroups(video));
-  history.replaceState(null, '', `/?project=${encodeURIComponent(state.project.id)}&video=${encodeURIComponent(video.id)}`);
+  updateLocation();
 }
 function allPosts() {
   const posts = new Map(state.project.posts.map(post => [post.id, {...post}]));
