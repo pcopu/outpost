@@ -10,9 +10,39 @@ import math
 import os
 from pathlib import Path
 import shutil
+import zlib
 
 from .archive import snapshot_id
 from .util import copy_file,digest, relative, write_json
+
+
+def _interrupted_layout(store,base,scratch):
+    # A crash can leave chunks without transport.json. Preserve that upload's
+    # chunk boundaries when resuming through a backend with different defaults.
+    if hasattr(store,'read_payload'):
+        try:data=store.read_payload(base+'/payload/000000')
+        except FileNotFoundError:return None
+    else:
+        first=Path(scratch)/'interrupted-first-chunk'
+        if not store.get(base+'/payload/000000',first):return None
+        if first.stat().st_size>129*1024*1024:
+            raise ValueError('Interrupted archive chunk exceeds bounded size')
+        data=first.read_bytes();first.unlink()
+    if len(data)>129*1024*1024:
+        raise ValueError('Interrupted archive chunk exceeds bounded size')
+    version=1;size=len(data)
+    if data[:2]==b'\x1f\x8b':
+        decoder=zlib.decompressobj(31)
+        try:raw=decoder.decompress(data,128*1024*1024+1)
+        except zlib.error as e:raise ValueError('Invalid interrupted archive compression') from e
+        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError('Invalid or oversized interrupted archive chunk')
+        version=2;size=len(raw)
+    if not 1<=size<=128*1024*1024:
+        raise ValueError('Invalid interrupted archive chunk size')
+    # Normal upload still compares every existing object's complete hash to
+    # freshly packed local bytes; inference never approves damaged content.
+    return version,size
 
 
 def upload_payload(store,source,manifest,base,scratch,ensure_object):
@@ -23,6 +53,9 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
         prior=json.loads(previous.read_text())
         version=prior.get('format_version')
         size=prior.get('chunk_size')
+    else:
+        interrupted=_interrupted_layout(store,base,scratch)
+        if interrupted:version,size=interrupted
     if version not in (1,2):raise ValueError('Unsupported transport version')
     memory_mode=version==2 and hasattr(store,'put_payload')
     if not 1<=size<=128*1024*1024:
@@ -62,6 +95,7 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
             files.append({'path':entry['path'],'offset':position,'size':entry['size']})
             with (source/entry['path']).open('rb') as src:
                 remaining=entry['size']
+                file_hash=hashlib.sha256()
                 while remaining:
                     if output is None:
                         raw_output=io.BytesIO() if memory_mode else path.open('wb')
@@ -69,9 +103,11 @@ def upload_payload(store,source,manifest,base,scratch,ensure_object):
                     block=src.read(min(1024*1024,size-used,remaining))
                     if not block:
                         raise ValueError('Snapshot file shortened during packing')
-                    output.write(block);raw_hash.update(block);used+=len(block);position+=len(block);remaining-=len(block)
+                    output.write(block);raw_hash.update(block);file_hash.update(block);used+=len(block);position+=len(block);remaining-=len(block)
                     if used==size:
                         flush()
+                if src.read(1) or file_hash.hexdigest()!=entry['sha256']:
+                    raise ValueError('Snapshot file changed during packing; checksum mismatch')
         flush()
         for task in pending:task.result()
     finally:

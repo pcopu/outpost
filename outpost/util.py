@@ -74,6 +74,9 @@ class ManagedConnection(sqlite3.Connection):
 
 
 def connect(path, readonly=False):
+    path = Path(path)
+    if path.name == 'catalog.sqlite3' and not path.exists() and (path.parent / 'cloud.json').exists():
+        raise ValueError('This catalog is in cloud mode. Use catalog query/record or cloud sql/transact; local snapshot/import workflows require an explicit restore to a separate root.')
     db = sqlite3.connect(Path(path).resolve().as_uri() + ('?mode=ro' if readonly else '?mode=rw'), uri=True, timeout=5, factory=ManagedConnection)
     db.row_factory = sqlite3.Row
     db.execute('PRAGMA foreign_keys=ON')

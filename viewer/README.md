@@ -6,6 +6,16 @@ Media stays in private R2. A snapshot remains the authoritative recovery archive
 The browser reads an exported catalog and streams individual files from packed
 snapshots. An optional direct object map supports existing R2 media collections.
 
+The same Worker can serve private D1 catalogs through `catalog.mjs`; see
+[../CLOUD.md](../CLOUD.md). Add one `d1_databases` binding per app and a
+`CATALOG_DATABASES` string variable containing an app-to-binding JSON mapping
+(for example `{"example":"CATALOG_EXAMPLE"}`). Catalog routes require the
+existing administrator bearer token; viewer sessions and read keys do not
+grant database access. Oversized scalar values use the private `MEDIA` R2
+binding under `catalogs/APP/blobs/SHA256`. Keep bindings and real database IDs
+in the ignored deployment configuration. D1 changes do not automatically
+refresh the browser's exported project JSON.
+
 ## Checks
 
 ```sh
@@ -41,7 +51,8 @@ python3 -m outpost.viewer ./private-snapshot \
 
 Upload the result to `viewer/projects/APP_ID.json`. Upload `viewer/index.json`
 with `{"projects":[{"id":"example","name":"Example"}]}`. The index selects
-which apps the deployment can expose. SQLite remains local. Each export retains
+which apps the deployment can expose. This export workflow uses a local snapshot.
+Each export retains
 its snapshot and catalog hashes. Re-export after importing production revisions.
 Existing observation objects remain separate and survive catalog refreshes.
 
@@ -97,3 +108,13 @@ outpost snapshot upload example SNAPSHOT_ID \
 waits for every full read-back before storing transport or completion metadata.
 It uses the same packed snapshot protocol and recovery checks as the Wrangler connection.
 The default backend remains the one explicitly configured in the local registry.
+# Exact source versions
+
+The Source view reads immutable revisions, render links and evidence directly
+from the app's configured D1 binding. It keeps historical mixed file collections
+separate, supports individual downloads, and offers a checksum-verified project
+ZIP up to 16 MiB / 32 files. Larger projects use the verified CLI restore. See
+[SOURCE_VERSIONS.md](../SOURCE_VERSIONS.md) for commands and verification limits.
+No new credentials are needed: viewers use their existing session and project
+allowlist; publication uses the existing administrator token. The source tables
+are created atomically during the first explicit publication, never by reads.

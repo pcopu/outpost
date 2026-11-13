@@ -22,8 +22,8 @@ def validate(config):
             raise ValueError('An explicit account ID is required for a default Wrangler reference')
         WranglerStore(config['bucket'],config['account_id'])
     elif backend=='worker':
-        allowed|={'url','token_env'}
-        WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'))
+        allowed|={'url','token_env','token_file','token_key'}
+        WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'),config.get('token_file'),config.get('token_key','ADMIN_TOKEN'))
     elif backend=='rclone':
         allowed|={'remote'};RcloneStore(config['remote'])
     else:
@@ -68,5 +68,5 @@ def backend(config):
     validate(config)
     if config['backend']=='directory':return DirectoryStore(config['path'])
     if config['backend']=='rclone':return RcloneStore(config['remote'])
-    if config['backend']=='worker':return WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'))
+    if config['backend']=='worker':return WorkerStore(config['url'],config.get('token_env','OUTPOST_ARCHIVE_TOKEN'),config.get('token_file'),config.get('token_key','ADMIN_TOKEN'))
     return WranglerStore(config['bucket'],config['account_id'])

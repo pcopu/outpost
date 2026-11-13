@@ -1,11 +1,14 @@
 # Outpost
 
 A small CLI for marketing files and social/ad catalogs across multiple apps.
-Each app has its own SQLite database, original files, provenance, snapshots,
+Each app has its own D1 or local SQLite database, original files, provenance, snapshots,
 and remote object prefix. Python 3.10+ on macOS or Linux; no runtime Python
 dependencies. The optional Cloudflare browser library is documented in
 [viewer/README.md](viewer/README.md). Model calls and automatic publication are
 outside the CLI.
+
+For cloud catalogs, agent commands, migration and recovery references, read
+[CLOUD.md](CLOUD.md). Cloud queries and updates do not require local SQLite.
 
 Run from a checkout with `python3 -m outpost`, or install without downloads:
 
@@ -19,6 +22,62 @@ Use an unused command path and keep the checkout in place. Alternatively,
 `python3 -m pip install .` provides the command in a Python environment.
 Use an explicit local `--root` or `OUTPOST_ROOT`; the source-checkout default
 is `data/` next to this README. Never put this root on an object/network mount.
+
+## Move data to Cloudflare and free local storage
+
+Use `offload` to finish a move to the configured private R2 backend:
+
+```sh
+outpost offload example --dry-run
+outpost offload example
+# Also import and remove an explicitly selected media source directory:
+outpost offload example --source ~/creative/example/completed-renders --dry-run
+outpost offload example --source ~/creative/example/completed-renders
+# Clean an old download/import staging directory using exact archived hashes:
+outpost offload example --copies ./local/example-import --dry-run
+outpost offload example --copies ./local/example-import
+```
+
+The command uploads missing snapshots and a current self-contained archive,
+reads every remote file back and checks its SHA-256, persists recovery metadata,
+then removes matching local payloads from managed files and snapshot trees.
+Local catalogs, app identity, manifests, privacy holds and recovery information
+remain. `snapshot upload` alone is still a backup operation and does not free
+local storage. An incomplete upload or failed verification never authorizes
+deletion. Changed files stop deletion; rerunning resumes safely.
+
+Source files/directories are opt-in. `--source` imports screened regular files with
+their original paths and hashes before removing their verified local copies.
+Credentials, caches and unselected databases are excluded and stay local; the
+dry run reports them. Choose completed asset directories, not an entire working
+project whose code or live database still needs local media. Unselected source
+originals are untouched.
+
+`--copies` never imports new data. It removes only exact SHA-256/size matches
+to this app's freshly verified archives in the named staging paths, records
+their recovery mapping, and reports unmatched files that it retains. Abandoned
+`.building-*` snapshot stages receive the same exact-match cleanup. Neither
+option can select the live library or an archive destination.
+
+After offloading, run `offload` again for new imports. Previously offloaded
+files stream from existing archives into the new archive in bounded memory;
+they are not downloaded into a local restore tree. Each resulting snapshot
+retains the existing full restore format. All historical snapshots are also
+uploaded and verified before their local payloads are removed. Stored upload
+receipts alone are never used as permission to delete.
+
+An upload interrupted before `transport.json` is written can resume using the
+first existing chunk's original size and compression format. Every chunk must
+still match the freshly packed source bytes. For legacy chunks larger than the
+Worker's 80 MiB upload limit, use the configured Wrangler/R2 backend to finish
+the upload; do not overwrite or delete the existing partial archive.
+
+`data/apps/APP/offload-recovery.json` records the current snapshot, verification
+results and selected source recovery mappings. Use `asset fetch` below to get
+one file, or `snapshot download` and `restore` for a full recovery. The result
+reports logical bytes removed and the observed filesystem free-space change
+separately: APFS clones share blocks, and other applications may write while
+offload runs. No background job or automatic schedule is installed.
 
 ## Quick start
 
@@ -320,12 +379,12 @@ Remote devices make separate snapshots and never merge live databases.
 An interrupted local import/restore keeps staging files for inspection;
 there is no automatic deletion or unsafe overwrite of existing work.
 
-R2 holds private immutable backups; SQLite remains the local live database.
-Media normally stays local unless explicitly offloaded after remote verification.
+R2 holds private immutable archives; SQLite remains the local live database.
+Use `offload APP` to move managed media to R2 after remote verification.
 An offloaded file can have its only retained payload in R2, with catalog and
 recovery metadata still local. `asset fetch` retrieves an explicit external copy
-on demand. There is no automatic media eviction/hydration, cross-device merge,
-or automatic deletion.
+on demand. Deletion happens only through an explicitly invoked offload, not
+through ordinary upload. There is no implicit hydration or cross-device merge.
 
 No acquisition, transcription, ad-platform publishing, web interface,
 background scheduling, or hosted CI is included. Original legacy scripts
@@ -382,7 +441,9 @@ Retain exact file SHA-256/size, snapshot path, packed offset/chunk mapping,
 and the authoritative remote snapshot when offloading. Local snapshot trees
 with removed payload files are partial caches: `snapshot list` lists their
 identifiers but does not prove local completeness. Local verify/export/upload
-and new complete snapshot creation need missing media restored first.
+and the legacy `snapshot create` command need missing media restored first.
+Use `offload` for a new complete remote archive without restoring previously
+offloaded media to disk.
 Do not hide media eviction by declaring it a credential/privacy exclusion.
 `remote-verify` can still validate the full cloud snapshot without rehydration.
 
@@ -409,3 +470,10 @@ session state, local paths, manifests, or receipts. `data/`, `local/`, and
 exports are ignored. Inspect staged files and the full history before any
 public push; `.gitignore` does not sanitize history. No GitHub Actions
 workflows or hosted test dispatch are used.
+# Exact video source versions
+
+See [SOURCE_VERSIONS.md](SOURCE_VERSIONS.md) for immutable source manifests,
+render/version links, multilingual transcripts, pinned reusable inputs, verified
+restore and missing-file checkout recovery. Cloud sources use current D1 reads
+and private R2 chunks. Originals remain archived; source bytes, dependency
+completeness, restore/render tests and creative approval are recorded separately.

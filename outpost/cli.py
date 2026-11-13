@@ -1,4 +1,4 @@
-"""JSON-output CLI. No hosted models, services, or background workers."""
+"""JSON-output CLI for explicit cloud/local operations; no background workers."""
 import argparse
 import json
 import os
@@ -15,10 +15,40 @@ from .util import write_json
 
 
 def parser():
-    p=argparse.ArgumentParser(prog='outpost',description='App-scoped marketing catalogs, original assets, and verified backups')
+    p=argparse.ArgumentParser(prog='outpost',description='Private app-scoped cloud catalogs, original assets, and verified recovery')
     p.add_argument('--version',action='version',version=__version__)
     p.add_argument('--root',type=Path,default=Path(os.environ.get('OUTPOST_ROOT',Path(__file__).resolve().parents[1]/'data')))
     groups=p.add_subparsers(dest='group',required=True)
+    sources=groups.add_parser('source',help='Exact video sources and render provenance').add_subparsers(dest='action',required=True)
+    freeze=sources.add_parser('freeze');freeze.add_argument('app');freeze.add_argument('directory',type=Path)
+    freeze.add_argument('--spec',type=Path,required=True);freeze.add_argument('--out',type=Path,required=True);dry(freeze)
+    for action in ('publish','render'):
+        command=sources.add_parser(action);command.add_argument('app');command.add_argument('directory',type=Path)
+        command.add_argument('--manifest',type=Path,required=True);command.add_argument('--revision',type=int,required=True)
+        command.add_argument('--operation-id',required=True);dry(command)
+        if action=='render':command.add_argument('--spec',type=Path,required=True)
+    show=sources.add_parser('show');show.add_argument('app');show.add_argument('revision_id')
+    listing=sources.add_parser('list');listing.add_argument('app');listing.add_argument('video');listing.add_argument('--offset',type=int,default=0)
+    check=sources.add_parser('check',help='Append restore/render/approval evidence without changing source history')
+    check.add_argument('app');check.add_argument('--json',type=Path,required=True);check.add_argument('--revision',type=int,required=True);check.add_argument('--operation-id',required=True);dry(check)
+    restore_source=sources.add_parser('restore');restore_source.add_argument('app');restore_source.add_argument('revision_id')
+    restore_source.add_argument('--out',type=Path,required=True);restore_source.add_argument('--resume',action='store_true')
+    restore_source.add_argument('--missing-only',action='store_true');dry(restore_source)
+    cloud=groups.add_parser('cloud',help='Query and update Cloudflare catalogs without a local database').add_subparsers(dest='action',required=True)
+    for action in ('status','schema'):
+        command=cloud.add_parser(action);command.add_argument('app')
+    migrate=cloud.add_parser('migrate',help='Verify every cloud row, then replace local SQLite with a connection reference')
+    migrate.add_argument('app');migrate.add_argument('--reference',type=Path,required=True);dry(migrate)
+    sql=cloud.add_parser('sql',help='Read-only SELECT; large scalar values are expanded after SQL evaluation')
+    sql.add_argument('app');sql.add_argument('--sql',required=True);sql.add_argument('--params',default='[]')
+    transaction=cloud.add_parser('transact',help='Atomic, revision-checked writes with a reusable operation identity')
+    transaction.add_argument('app');transaction.add_argument('--json',type=Path,required=True)
+    transaction.add_argument('--revision',type=int,required=True);transaction.add_argument('--operation-id',required=True);dry(transaction)
+    offload=groups.add_parser('offload',help='Upload missing archives, verify every remote file, then free local storage')
+    offload.add_argument('app')
+    offload.add_argument('--source',type=Path,action='append',default=[],help='Explicit source file or directory to import and offload; excluded files remain local')
+    offload.add_argument('--copies',type=Path,action='append',default=[],help='Explicit staging file/directory; remove only exact matches to verified archives, retain unmatched files')
+    transport(offload);dry(offload)
     app=groups.add_parser('app').add_subparsers(dest='action',required=True)
     add=app.add_parser('add');add.add_argument('app');add.add_argument('--name',required=True);dry(add)
     app.add_parser('list')
@@ -69,6 +99,8 @@ def transport(p,required=False):
     store.add_argument('--wrangler-bucket',help='Private bucket accessed through an existing Wrangler login')
     store.add_argument('--worker-url',help='HTTPS origin of the private Outpost archive Worker')
     p.add_argument('--token-env',default='OUTPOST_ARCHIVE_TOKEN',help='Existing environment variable containing the archive admin token')
+    p.add_argument('--token-file',type=Path,help='Existing owner-only credential file; only its path is saved')
+    p.add_argument('--token-key',default='ADMIN_TOKEN',help='Credential key within the existing file')
     store.add_argument('--local-store',type=Path,help='Offline/test object directory')
     p.add_argument('--account-id',help='Explicit Wrangler account ID (not a token)')
     p.add_argument('--private-confirmed',action='store_true',help='Operator has verified no public bucket URL/domain')
@@ -78,7 +110,10 @@ def reference(args):
     base={'format_version':1,'private_confirmed':args.private_confirmed}
     if args.local_store:return dict(base,backend='directory',path=str(args.local_store.expanduser().resolve()))
     if args.rclone:return dict(base,backend='rclone',remote=args.rclone)
-    if args.worker_url:return dict(base,backend='worker',url=args.worker_url,token_env=args.token_env)
+    if args.worker_url:
+        config=dict(base,backend='worker',url=args.worker_url,token_env=args.token_env)
+        if args.token_file:config.update(token_file=str(args.token_file.expanduser().absolute()),token_key=args.token_key)
+        return config
     return dict(base,backend='wrangler',bucket=args.wrangler_bucket,account_id=args.account_id)
 
 
@@ -92,13 +127,64 @@ def store(args,lib):
         return DirectoryStore(args.local_store)
     if not args.private_confirmed:
         raise ValueError('Verify bucket privacy, then pass --private-confirmed; credentials stay in the existing CLI')
-    if args.worker_url:return WorkerStore(args.worker_url,args.token_env)
+    if args.worker_url:return WorkerStore(args.worker_url,args.token_env,args.token_file,args.token_key)
     return RcloneStore(args.rclone) if args.rclone else WranglerStore(args.wrangler_bucket,args.account_id)
 
 
 def execute(args):
     lib=Library(args.root)
     dry_run=getattr(args,'dry_run',False)
+    if args.group=='source':
+        from .source_versions import freeze,SourceClient,publish,archived_reader,record_render
+        from .source_restore import restore,validate,real_path,canonical
+        if args.action=='freeze':
+            spec=json.loads(args.spec.read_text())
+            if spec.get('app_id')!=args.app:raise ValueError('Source description belongs to another app')
+            result=freeze(args.directory,spec)
+            target=real_path(args.out)
+            if target.exists():raise FileExistsError('Frozen manifest already exists; choose a new path')
+            if not dry_run:
+                with target.open('xb') as output:output.write(canonical(result)+b'\n')
+            return {'revision_id':result['revision_id'],'files':len(result['manifest']['files']),'dry_run':dry_run,'destination':str(target)}
+        from .cloud import for_app
+        remote=for_app(lib,args.app)
+        if not remote:raise ValueError('Exact source publication requires this app’s cloud catalog reference')
+        client=SourceClient(remote)
+        if args.action=='check':
+            from .util import secret_data
+            evidence=json.loads(args.json.read_text())
+            if evidence.get('app_id')!=args.app or secret_data(evidence):raise ValueError('Invalid source evidence or possible credential')
+            return client.request('check',{'check':evidence,'expected_revision':args.revision,'operation_id':args.operation_id,'dry_run':dry_run})
+        if args.action=='list':return client.request('list',{'video':args.video,'offset':args.offset})
+        if args.action in ('show','restore'):
+            revision=client.request('revision/'+args.revision_id);validate(revision)
+            if revision['manifest']['app_id']!=args.app:raise ValueError('Source revision belongs to another app')
+            if args.action=='show':return revision
+            return restore(revision,args.out,lambda file:client.fetch(revision,file),resume=args.resume,missing_only=args.missing_only,dry_run=dry_run)
+        revision=json.loads(args.manifest.read_text())
+        if args.action=='render':return record_render(client,revision,args.directory,json.loads(args.spec.read_text()),args.revision,args.operation_id,dry_run)
+        return publish(client,revision,args.directory,args.revision,args.operation_id,dry_run,archive_fetch=archived_reader(lib,remote))
+    if args.group=='cloud':
+        from .cloud import CloudCatalog,for_app
+        if args.action=='migrate':
+            from .cloud_migration import migrate
+            remote=CloudCatalog(json.loads(args.reference.read_text()))
+            return migrate(lib,args.app,remote,dry_run,progress=lambda message:print(message,file=sys.stderr,flush=True))
+        remote=for_app(lib,args.app)
+        if args.action=='status':
+            return {'app_id':args.app,'mode':'cloud' if remote else 'local',
+                    'local_database_exists':(lib.app_dir(args.app)/'catalog.sqlite3').exists(),
+                    'cloud':remote.request('state') if remote else None}
+        if not remote:raise ValueError('This app has no cloud catalog reference; migrate it first')
+        if args.action=='schema':return remote.request('schema')
+        if args.action=='sql':return remote.sql(args.sql,json.loads(args.params))
+        return remote.mutate(json.loads(args.json.read_text()),args.revision,args.operation_id,dry_run)
+    if args.group=='offload':
+        from .offload import offload
+        backend=store(args,lib)
+        if isinstance(backend,DirectoryStore):backend.packed=True
+        return offload(lib,args.app,backend,args.source,dry_run,
+                       progress=lambda message:print(message,file=sys.stderr,flush=True),copies=args.copies)
     if args.group=='storage':
         from .configuration import load,save
         return save(lib.root,reference(args),dry_run) if args.action=='configure' else (load(lib.root) or {'configured':False})
@@ -124,6 +210,11 @@ def execute(args):
         if args.metric:filters['metric']=args.metric
         return lib.rows(args.app,'source_metrics',filters,args.limit)
     if args.group=='lineage':
+        from .cloud import for_app
+        remote=for_app(lib,args.app)
+        if remote:
+            return remote.sql('SELECT * FROM source_relationships WHERE from_key=? OR to_key=? LIMIT ?',
+                              [args.entity_key,args.entity_key,args.limit])['rows']
         from .util import connect
         with connect(lib.app_dir(args.app)/'catalog.sqlite3',readonly=True) as db:
             return [dict(row) for row in db.execute('SELECT * FROM source_relationships WHERE from_key=? OR to_key=? LIMIT ?',(args.entity_key,args.entity_key,args.limit))]

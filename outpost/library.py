@@ -134,6 +134,10 @@ class Library:
     def rows(self, app, table, filters=None, limit=None):
         if table not in READ_TABLES:
             raise ValueError('Unknown table')
+        from .cloud import for_app
+        remote = for_app(self, app)
+        if remote:
+            return remote.rows(table, filters, limit)
         with connect(self.app_dir(app)/'catalog.sqlite3',readonly=True) as db:
             if table in model.TABLES and table not in model.available(db):return []
             columns = {r['name'] for r in db.execute(f'PRAGMA table_info("{table}")')}
@@ -154,6 +158,11 @@ class Library:
         if table not in DOMAIN_TABLES or not row or secret_data(row):
             raise ValueError('Invalid record, table, or possible credential')
         path = self.app_dir(app)
+        from .cloud import for_app, validate_paths
+        remote = for_app(self, app)
+        if remote:
+            validate_paths(self, app, remote, table, row)
+            return remote.record(table, row, dry_run)
         with connect(path/'catalog.sqlite3',readonly=True) as db:
             info = list(db.execute(f'PRAGMA table_info("{table}")'))
             cols = {r['name'] for r in info}

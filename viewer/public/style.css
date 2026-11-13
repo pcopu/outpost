@@ -382,3 +382,9 @@ nav {
 footer {
   padding:16px 20px}
 }
+/* Version membership stays visible beside the selected render. */
+.exact-sources { margin-block: 2rem; padding-top: 1.5rem; border-top: 1px solid #d9d3c9; }
+.source-facts { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 4fr); gap: .5rem 1rem; font-size: .9rem; }
+.source-facts dt { color: #6f6b62; }
+.source-facts dd { margin: 0; overflow-wrap: anywhere; }
+.source-actions { display: flex; flex-wrap: wrap; gap: 1rem; margin-block: 1rem; }

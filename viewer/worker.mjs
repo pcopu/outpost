@@ -1,3 +1,5 @@
+import {handleCatalog, CatalogError} from './catalog.mjs';
+import {handleSources, sourceVideos} from './sources.mjs';
 const encoder = new TextEncoder();
 const security = {
   'Cache-Control': 'private, no-store',
@@ -211,6 +213,8 @@ async function serve(request, env) {
   }
   if (request.headers.has('Origin') && request.headers.get('Origin') !== url.origin) throw new HttpError(403, 'Origin not allowed');
   if (!env.READ_KEY || !env.SESSION_SECRET || !env.ADMIN_TOKEN) throw new HttpError(503, 'Authentication is not configured');
+  if (path.startsWith('/api/catalog/')) return handleCatalog(request, env, {admin, json});
+  if (path.startsWith('/api/sources/')) return handleSources(request, env, {admin, authenticated, json, media});
   if (path === '/api/session' && request.method === 'POST') {
     const data = await readJson(request);
     if (!await sameSecret(data.key, env.READ_KEY) && !await validTicket(env, data.ticket || '', 'launch')) throw new HttpError(401, 'Access key is invalid');
@@ -244,14 +248,17 @@ async function serve(request, env) {
     if (!item) throw new HttpError(404, 'File not found');
     return media(request, env, item);
   }
-  return json({...catalog, observations: (await ledger(env, catalog.id)).events});
+  const sourceVideoList = await sourceVideos(env, catalog.id);
+  const known = new Set(catalog.videos.map(video => video.id));
+  const videos = [...catalog.videos, ...sourceVideoList.filter(video => !known.has(video.video_id)).map(video => ({id:video.video_id,title:video.title||video.video_id,files:[],revisions:video.revisions}))];
+  return json({...catalog, videos, source_catalog: sourceVideoList, observations: (await ledger(env, catalog.id)).events});
 }
 export default {
   async fetch(request, env) {
     try { return await serve(request, env); }
     catch (error) {
-      if (!(error instanceof HttpError)) console.error(JSON.stringify({event: 'request_failed', path: new URL(request.url).pathname}));
-      return json({error: error instanceof HttpError ? error.message : 'Outpost could not load this request'}, error.status || 503);
+      if (!(error instanceof HttpError) && !(error instanceof CatalogError)) console.error(JSON.stringify({event: 'request_failed', path: new URL(request.url).pathname}));
+      return json({error: error instanceof HttpError || error instanceof CatalogError ? error.message : 'Outpost could not load this request'}, error.status || 503);
     }
   }
 };

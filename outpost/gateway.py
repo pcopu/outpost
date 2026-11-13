@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import stat
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import build_opener, HTTPRedirectHandler, Request
@@ -13,13 +14,31 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def credential_token(token_env, token_file=None, token_key='ADMIN_TOKEN'):
+    """Resolve existing credentials in memory; persist references only."""
+    if not re.fullmatch('[A-Z][A-Z0-9_]*',token_env) or not re.fullmatch('[A-Z][A-Z0-9_]*',token_key):
+        raise ValueError('Invalid credential environment/key reference')
+    value=os.environ.get(token_env)
+    if value:return value
+    if token_file:
+        path=Path(token_file)
+        if (not path.is_absolute() or path.resolve()!=path or not path.is_file()
+                or path.stat().st_uid!=os.getuid() or stat.S_IMODE(path.stat().st_mode)&0o077):
+            raise ValueError('Credential file must be an existing owner-only regular file')
+        for line in path.read_text().splitlines():
+            if line.startswith(token_key+'='):
+                value=line.split('=',1)[1].strip().strip('\"\'')
+                if value:return value
+    raise ValueError('Set the configured token environment variable or credential-file reference')
+
+
 class WorkerStore:
     packed = True
     chunk_size = 64 * 1024 * 1024
     compress_payload = True
     parallel_uploads = True
 
-    def __init__(self, url, token_env='OUTPOST_ARCHIVE_TOKEN'):
+    def __init__(self, url, token_env='OUTPOST_ARCHIVE_TOKEN', token_file=None, token_key='ADMIN_TOKEN'):
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
             raise ValueError('Archive Worker requires an HTTPS origin without credentials or a path')
@@ -27,14 +46,13 @@ class WorkerStore:
             raise ValueError('Invalid archive credential environment reference')
         self.url = url.rstrip('/')
         self.token_env = token_env
+        self.token_file, self.token_key = token_file, token_key
         self._opener = build_opener(NoRedirect())
 
     def _request(self, key, data=None):
         if not re.fullmatch(r'apps/[a-z][a-z0-9-]{0,63}/snapshots/[0-9a-f]{64}/(?:COMMITTED\.json|manifest\.json|transport\.json|payload/[0-9]{6})', key):
             raise ValueError('Archive access requires a packed snapshot object path')
-        token = os.environ.get(self.token_env)
-        if not token:
-            raise ValueError('Set the configured archive token environment variable')
+        token = credential_token(self.token_env,self.token_file,self.token_key)
         headers = {'Authorization': 'Bearer ' + token, 'User-Agent': 'Outpost archive/1.0'}
         if data is not None:
             if len(data) > 80 * 1024 * 1024:

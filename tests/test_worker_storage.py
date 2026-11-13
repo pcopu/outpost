@@ -14,6 +14,27 @@ from outpost.library import Library
 from outpost.storage import upload, verify_remote, download
 
 class WorkerStorageTests(unittest.TestCase):
+    def test_owner_only_credential_reference_supports_fetch_without_exported_secret(self):
+        from outpost.configuration import backend,validate
+        from outpost.cli import parser,reference
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ,{},clear=True):
+            credential=Path(temp).resolve()/'existing.env';credential.write_text('ADMIN_TOKEN=synthetic-admin-token\n');credential.chmod(0o600)
+            args=parser().parse_args(['storage','configure','--worker-url','https://archive.example',
+                '--token-file',str(credential),'--private-confirmed'])
+            config=validate(reference(args));self.assertNotIn('synthetic-admin-token',str(config))
+            store=backend(config)
+            class Endpoint:
+                def open(inner,request,timeout):
+                    self.assertEqual('Bearer synthetic-admin-token',request.get_header('Authorization'))
+                    return io.BytesIO(b'archive bytes')
+            store._opener=Endpoint();key='apps/alpha/snapshots/'+'a'*64+'/manifest.json'
+            self.assertEqual(b'archive bytes',b''.join(store.iter_object(key)))
+            credential.chmod(0o644)
+            with self.assertRaisesRegex(ValueError,'owner-only'):list(store.iter_object(key))
+            credential.chmod(0o600);link=credential.with_name('linked.env');link.symlink_to(credential)
+            config['token_file']=str(link)
+            with self.assertRaises(ValueError):list(backend(config).iter_object(key))
+
     def test_authenticated_archive_roundtrip_and_immutable_retries(self):
         self.assertIsNotNone(WorkerStore, 'Worker storage backend is implemented')
         class Endpoint:

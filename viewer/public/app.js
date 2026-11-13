@@ -1,4 +1,5 @@
 import {selectRender} from './renders.mjs';
+import {sourcePanel} from './sources.mjs';
 
 const $ = id => document.getElementById(id);
 const state = {project: null, video: null, projectId: null, render: null, assets: new Map()};
@@ -10,7 +11,7 @@ const node = (tag, className, text) => {
 };
 const show = (id, visible) => { $(id).hidden = !visible; };
 const count = value => new Intl.NumberFormat().format(value);
-const mediaUrl = sha => `/api/projects/${encodeURIComponent(state.project.id)}/assets/${sha}`;
+const mediaUrl = sha => state.assets.get(sha)?.sourceUrl || `/api/projects/${encodeURIComponent(state.project.id)}/assets/${sha}`;
 const date = value => value ? (value.length === 10 ? new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeZone: 'UTC'}).format(new Date(value)) : new Date(value).toLocaleString()) : 'Date unrecorded';
 function notice(message) { $('notice').textContent = message; show('notice', Boolean(message)); }
 async function api(path, init) {
@@ -24,7 +25,7 @@ function uniqueFiles(files) {
   return [...new Map(files.map(file => [file.sha256 + ':' + file.path + ':' + file.role, file])).values()];
 }
 function renderFiles(video) {
-  return [...new Map(video.files.filter(file => file.role === 'render' && state.assets.has(file.sha256)).map(file => [file.sha256, file])).values()];
+  return [...new Map(video.files.filter(file => file.role === 'render' && state.assets.has(file.sha256)).map(file => [file.source_render_id || file.sha256, file])).values()];
 }
 function drawList() {
   const target = $('video-list'); target.replaceChildren();
@@ -32,8 +33,9 @@ function drawList() {
   for (const video of state.project.videos.filter(v => v.title.toLowerCase().includes(query))) {
     const button = node('button', 'video-item', video.title);
     button.type = 'button'; button.setAttribute('aria-pressed', String(video.id === state.video?.id));
-    const renders = renderFiles(video).length;
-    button.append(node('small', null, `${renders ? renders + ' render' + (renders === 1 ? '' : 's') : 'No render in R2'} · ${uniqueFiles(video.files).length} files`));
+    const renders = Math.max(renderFiles(video).length, state.project.source_catalog?.find(item => item.video_id === video.id)?.render_count || 0);
+    const revisions = state.project.source_catalog?.find(item => item.video_id === video.id)?.revisions || 0;
+    button.append(node('small', null, `${renders ? renders + ' render' + (renders === 1 ? '' : 's') : 'No render in R2'} · ${revisions ? revisions + ' source versions' : uniqueFiles(video.files).length + ' files'}`));
     button.addEventListener('click', () => chooseVideo(video)); target.append(button);
   }
   if (!target.children.length) target.append(node('p', 'subtle', 'No videos match this search.'));
@@ -81,10 +83,30 @@ function sourceGroups(video) {
 function updateLocation() {
   const query = new URLSearchParams({project: state.project.id, video: state.video.id});
   if (state.render) query.set('render', state.render);
+  if (state.renderRecord) query.set('renderRecord', state.renderRecord);
   history.replaceState(null, '', '/?' + query);
 }
-function chooseVideo(video) {
-  state.video = video; state.render = null; drawList();
+async function chooseVideo(video) {
+  state.video = video; state.render = null; state.renderRecord = null; drawList();
+  const projectId = state.project.id;
+  let sources = {revisions: [], renders: [], checks: []};
+  try {
+    let offset = 0, catalogRevision = null;
+    do {
+      const page = await api(`/api/sources/${encodeURIComponent(projectId)}/list?video=${encodeURIComponent(video.id)}&offset=${offset}`);
+      if (catalogRevision !== null && page.catalog_revision !== catalogRevision) throw new Error('Source catalog changed while loading. Select the video again.');
+      catalogRevision = page.catalog_revision;
+      sources.revisions.push(...page.revisions); sources.renders.push(...page.renders); sources.checks.push(...(page.checks || [])); offset = page.next_offset;
+      if (sources.revisions.length + sources.renders.length > 4000) throw new Error('Source history exceeds the browser limit; use the CLI.');
+    } while (offset != null);
+  } catch (error) { sources.error = error.message; }
+  if (state.video.id !== video.id || state.project.id !== projectId) return;
+  const newer = new Set(sources.renders.map(r => r.output.sha256));
+  video = {...video, files: [...video.files.filter(f => f.role !== 'render' || !newer.has(f.sha256)), ...sources.renders.map(r => {
+    state.assets.set(r.output.sha256, {...r.output, mime: 'video/mp4', name: r.output.path, sourceUrl: `/api/sources/${encodeURIComponent(projectId)}/render/${r.id}/files/0`});
+    return {...r.output, source_render_id: r.id, source_revision_id: r.source_revision_id, association: r.association};
+  })]};
+  const sourceView = sourcePanel(projectId, video, sources, api, null);
   const target = $('detail'); target.replaceChildren();
   const heading = node('div', 'detail-heading'); heading.append(node('h2', null, video.title)); target.append(heading);
   const renders = renderFiles(video);
@@ -94,13 +116,14 @@ function chooseVideo(video) {
     const select = node('select', 'render-select'); select.setAttribute('aria-label', 'Render version');
     renders.forEach((file, index) => {
       const option = node('option', null, `${index + 1} · ${file.path.split('/').slice(-2).join('/')} · ${file.sha256.slice(0, 8)}${file.reviewStatus ? ' · ' + file.reviewStatus : ''}`);
-      option.value = file.sha256; select.append(option);
+      option.value = file.source_render_id || file.sha256; select.append(option);
     });
-    const preferred = selectRender(renders, new URLSearchParams(location.search).get('render'));
-    state.render = preferred.sha256; select.value = state.render; player.src = mediaUrl(state.render);
+    const preferred = renders.find(file => file.source_render_id === new URLSearchParams(location.search).get('renderRecord')) || selectRender(renders, new URLSearchParams(location.search).get('render'));
+    state.render = preferred.sha256; state.renderRecord = preferred.source_render_id || null; select.value = preferred.source_render_id || state.render; player.src = mediaUrl(state.render); sourceView.selectRender(preferred);
     select.addEventListener('change', () => {
-      state.render = selectRender(renders, select.value).sha256;
-      select.value = state.render; player.pause(); player.src = mediaUrl(state.render); player.load(); updateLocation();
+      const file = renders.find(file => (file.source_render_id || file.sha256) === select.value);
+      state.render = file.sha256; state.renderRecord = file.source_render_id || null; sourceView.selectRender(file);
+      player.pause(); player.src = mediaUrl(state.render); player.load(); updateLocation();
     });
     player.addEventListener('error', () => notice('This render could not be streamed. Refresh the project or download the file.'));
     target.append(select);
@@ -124,7 +147,9 @@ function chooseVideo(video) {
     transcript.append(node('summary', null, 'Transcript'), node('pre', 'source-preview', video.metadata.transcript));
     target.append(transcript);
   }
-  target.append(sourceGroups(video));
+  if (sources.error) target.append(node('p', 'notice', 'Source view pending: ' + sources.error));
+  target.append(sourceView.element);
+  const historical = node('details'); historical.append(node('summary', null, 'Historical file library · version membership unverified'), sourceGroups(video)); target.append(historical);
   updateLocation();
 }
 function allPosts() {
@@ -163,7 +188,8 @@ async function loadProject(id) {
   const result = await api('/api/projects/' + encodeURIComponent(id));
   if (state.projectId !== id) return;
   state.project = result; state.assets = new Map(result.assets.map(a => [a.sha256, a]));
-  $('project-title').textContent = result.name; $('counts').textContent = `${count(result.videos.length)} videos · ${count(result.assets.length)} preserved files`;
+  const sourceCount = (result.source_catalog || []).reduce((total, video) => total + video.revisions, 0);
+  $('project-title').textContent = result.name; $('counts').textContent = `${count(result.videos.length)} video${result.videos.length === 1 ? '' : 's'} · ${sourceCount ? count(sourceCount) + ' source versions' : count(result.assets.length) + ' preserved files'}`;
   $('archive-info').textContent = `Archive snapshot ${result.snapshot_id}`;
   $('search').value = ''; drawList(); drawRaw();
   $('posts').replaceChildren(...allPosts().map(postRow));
@@ -172,7 +198,7 @@ async function loadProject(id) {
   if (!$('ads').children.length) $('ads').append(node('p', 'subtle', 'No ad usage recorded.'));
   const desired = new URLSearchParams(location.search).get('video');
   const selected = result.videos.find(v => v.id === desired) || result.videos.find(v => renderFiles(v).length) || result.videos[0];
-  if (selected) chooseVideo(selected); else $('detail').replaceChildren(node('p', 'empty', 'No videos recorded.'));
+  if (selected) await chooseVideo(selected); else $('detail').replaceChildren(node('p', 'empty', 'No videos recorded.'));
   show('login', false); show('workspace', true); show('project-label', true); show('logout', true); notice('');
 }
 async function start() {
